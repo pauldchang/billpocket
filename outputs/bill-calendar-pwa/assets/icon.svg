@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="BillPocket">
+  <rect width="128" height="128" rx="24" fill="#0f766e"/>
+  <path d="M34 25h60a8 8 0 0 1 8 8v68a8 8 0 0 1-8 8H34a8 8 0 0 1-8-8V33a8 8 0 0 1 8-8Z" fill="#ffffff"/>
+  <path d="M26 47h76" stroke="#0f766e" stroke-width="8"/>
+  <path d="M45 18v22M83 18v22" stroke="#ffffff" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="47" cy="67" r="8" fill="#fbbf24"/>
+  <circle cx="70" cy="67" r="8" fill="#2563eb"/>
+  <circle cx="47" cy="90" r="8" fill="#16a34a"/>
+  <path d="M66 91h21" stroke="#0f766e" stroke-width="9" stroke-linecap="round"/>
+</svg>

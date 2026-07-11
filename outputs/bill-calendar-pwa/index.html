@@ -1,0 +1,638 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#0f766e">
+    <title>BillPocket</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="assets/icon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary">
+        <div class="brand">
+          <img src="assets/icon.svg" alt="" class="brand-mark">
+          <div>
+            <strong>BillPocket</strong>
+            <span>Bills made simple</span>
+          </div>
+        </div>
+
+        <nav class="nav-list" aria-label="Views">
+          <button class="nav-item active" type="button" data-view="dashboard" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">#</span>
+            <span>Today</span>
+          </button>
+          <button class="nav-item" type="button" data-view="bills">
+            <span class="nav-icon" aria-hidden="true">[]</span>
+            <span>Bills</span>
+          </button>
+          <button class="nav-item" type="button" data-view="budget">
+            <span class="nav-icon" aria-hidden="true">%</span>
+            <span>Plan</span>
+          </button>
+          <button class="nav-item" type="button" data-view="connections">
+            <span class="nav-icon" aria-hidden="true">&lt;&gt;</span>
+            <span>Sync</span>
+          </button>
+          <button class="nav-item" type="button" data-view="email">
+            <span class="nav-icon" aria-hidden="true">@</span>
+            <span>Email</span>
+          </button>
+          <button class="nav-item" type="button" data-view="payments">
+            <span class="nav-icon" aria-hidden="true">$</span>
+            <span>History</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-status">
+          <span class="status-dot" id="bankStatusDot"></span>
+          <div>
+            <strong id="bankStatusTitle">Bank not connected</strong>
+            <span id="bankStatusMeta">Ready for setup</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow" id="todayLabel">Today</p>
+            <h1 id="viewTitle">Today</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="ghost-btn" type="button" id="installBtn" hidden>
+              <span aria-hidden="true">v</span>
+              <span>Install</span>
+            </button>
+            <button class="secondary-btn" type="button" id="connectBankBtn">
+              <span aria-hidden="true">&lt;&gt;</span>
+              <span>Link</span>
+            </button>
+            <button class="primary-btn" type="button" id="addBillBtn">
+              <span aria-hidden="true">+</span>
+              <span>Add</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="view active" id="dashboardView" data-title="Today">
+          <section class="pocket-hero" aria-labelledby="quickPayHeading">
+            <div class="hero-copy">
+              <p class="eyebrow">Next bill</p>
+              <h2 id="quickPayHeading">Ready when you are</h2>
+              <p id="quickPayMeta">Your upcoming bills and cash forecast will appear here.</p>
+            </div>
+            <div class="hero-pay">
+              <span id="quickPayDate">Today</span>
+              <strong id="quickPayAmount">$0.00</strong>
+              <button class="primary-btn full" type="button" id="quickPayBtn">
+                <span aria-hidden="true">$</span>
+                <span>Pay now</span>
+              </button>
+            </div>
+            <div class="hero-strip" id="heroStrip"></div>
+          </section>
+
+          <div class="metric-grid" id="metricGrid"></div>
+
+          <div class="content-grid">
+            <section class="calendar-panel" aria-labelledby="calendarHeading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Bill calendar</p>
+                  <h2 id="calendarHeading">This month</h2>
+                </div>
+                <div class="segmented-control" aria-label="Calendar month">
+                  <button type="button" id="prevMonthBtn" aria-label="Previous month">&lt;</button>
+                  <span id="calendarMonthLabel">Month</span>
+                  <button type="button" id="nextMonthBtn" aria-label="Next month">&gt;</button>
+                </div>
+              </div>
+              <div class="calendar-weekdays" aria-hidden="true">
+                <span>Sun</span>
+                <span>Mon</span>
+                <span>Tue</span>
+                <span>Wed</span>
+                <span>Thu</span>
+                <span>Fri</span>
+                <span>Sat</span>
+              </div>
+              <div class="calendar-grid" id="calendarGrid"></div>
+            </section>
+
+            <section class="agenda-panel" aria-labelledby="agendaHeading">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Smart queue</p>
+                  <h2 id="agendaHeading">Pay next</h2>
+                </div>
+                <button class="icon-btn" type="button" id="syncDueDatesBtn" aria-label="Sync due dates">
+                  <span aria-hidden="true">*</span>
+                </button>
+              </div>
+              <div class="agenda-list" id="agendaList"></div>
+            </section>
+          </div>
+
+          <section class="wide-panel forecast-panel" aria-labelledby="forecastHeading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Cash-flow preview</p>
+                <h2 id="forecastHeading">Monthly outlook</h2>
+              </div>
+              <button class="secondary-btn small" type="button" id="snapshotBtn">
+                <span aria-hidden="true">+</span>
+                <span>Save snapshot</span>
+              </button>
+            </div>
+            <div class="forecast-bars" id="forecastBars"></div>
+          </section>
+        </section>
+
+        <section class="view" id="billsView" data-title="Bills">
+          <div class="section-toolbar">
+            <div>
+              <p class="eyebrow">Recurring, one-time, subscriptions</p>
+              <h2>My bills</h2>
+            </div>
+            <div class="toolbar-controls">
+              <label class="search-box">
+                <span aria-hidden="true">?</span>
+                <input id="billSearchInput" type="search" placeholder="Search bills">
+              </label>
+              <select id="categoryFilter" aria-label="Filter by category">
+                <option value="all">All categories</option>
+                <option value="rent">Rent</option>
+                <option value="mortgage">Mortgage</option>
+                <option value="utilities">Utilities</option>
+                <option value="phone">Phone</option>
+                <option value="loan">Loans</option>
+                <option value="insurance">Insurance</option>
+                <option value="credit">Credit cards</option>
+                <option value="subscription">Subscriptions</option>
+                <option value="medical">Medical</option>
+                <option value="tax">Taxes</option>
+                <option value="childcare">Childcare</option>
+                <option value="purchase">Online purchases</option>
+                <option value="other">Other</option>
+              </select>
+            </div>
+          </div>
+          <div class="bill-list" id="billList"></div>
+        </section>
+
+        <section class="view" id="budgetView" data-title="Plan">
+          <div class="budget-layout">
+            <section class="budget-control-panel" aria-labelledby="budgetControlsHeading">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Monthly plan</p>
+                  <h2 id="budgetControlsHeading">Money left after bills</h2>
+                </div>
+              </div>
+              <label class="field">
+                <span>Monthly income</span>
+                <input id="incomeInput" type="number" min="0" step="50">
+              </label>
+              <label class="field">
+                <span>Reserve target</span>
+                <input id="reserveInput" type="number" min="0" step="50">
+              </label>
+              <label class="check-row">
+                <input id="includeAutopayInput" type="checkbox">
+                <span>Include autopay bills</span>
+              </label>
+              <button class="primary-btn full" type="button" id="saveBudgetSettingsBtn">
+                <span aria-hidden="true">OK</span>
+                <span>Save settings</span>
+              </button>
+            </section>
+
+            <section class="budget-table-panel" aria-labelledby="budgetTableHeading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Forecast log</p>
+                  <h2 id="budgetTableHeading">Next 12 months</h2>
+                </div>
+                <button class="secondary-btn small" type="button" id="exportBudgetBtn">
+                  <span aria-hidden="true">v</span>
+                  <span>Export CSV</span>
+                </button>
+              </div>
+              <div class="responsive-table">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Month</th>
+                      <th>Bills</th>
+                      <th>After bills</th>
+                      <th>Reserve gap</th>
+                    </tr>
+                  </thead>
+                  <tbody id="budgetRows"></tbody>
+                </table>
+              </div>
+            </section>
+          </div>
+
+          <section class="wide-panel snapshot-panel" aria-labelledby="snapshotsHeading">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Saved projections</p>
+                <h2 id="snapshotsHeading">Snapshots</h2>
+              </div>
+            </div>
+            <div class="snapshot-list" id="snapshotList"></div>
+          </section>
+        </section>
+
+        <section class="view" id="connectionsView" data-title="Sync">
+          <div class="connection-grid">
+            <section class="bank-panel" aria-labelledby="bankPanelHeading">
+              <div class="panel-heading">
+                <div>
+                  <p class="eyebrow">Payment source</p>
+                  <h2 id="bankPanelHeading">Linked bank</h2>
+                </div>
+                <button class="primary-btn small" type="button" id="bankConnectPanelBtn">
+                  <span aria-hidden="true">&lt;&gt;</span>
+                  <span>Connect</span>
+                </button>
+              </div>
+              <div class="bank-card-visual">
+                <div>
+                  <span id="bankCardLabel">Checking</span>
+                  <strong id="bankCardName">Not connected</strong>
+                </div>
+                <p id="bankCardMeta">ACH and card payment rails</p>
+              </div>
+              <div class="account-list" id="accountList"></div>
+            </section>
+
+            <section class="activity-panel" aria-labelledby="activityHeading">
+              <div class="panel-heading compact">
+                <div>
+                  <p class="eyebrow">Recent syncs</p>
+                  <h2 id="activityHeading">Activity</h2>
+                </div>
+                <button class="icon-btn" type="button" id="clearActivityBtn" aria-label="Clear activity">
+                  <span aria-hidden="true">x</span>
+                </button>
+              </div>
+              <div class="activity-list" id="activityList"></div>
+            </section>
+          </div>
+
+          <section class="wide-panel services-panel" aria-labelledby="servicesHeading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Biller services</p>
+                <h2 id="servicesHeading">Auto-find due dates</h2>
+              </div>
+              <button class="secondary-btn small" type="button" id="syncAllBtn">
+                <span aria-hidden="true">*</span>
+                <span>Sync all</span>
+              </button>
+            </div>
+            <div class="service-grid" id="serviceGrid"></div>
+          </section>
+        </section>
+
+        <section class="view" id="emailView" data-title="Email Scan">
+          <section class="wide-panel email-scan-panel" aria-labelledby="emailScanHeading">
+            <div class="panel-heading">
+              <div>
+                <p class="eyebrow">Private first pass</p>
+                <h2 id="emailScanHeading">Find bills, subscriptions, and purchases</h2>
+              </div>
+              <button class="secondary-btn small" type="button" id="sampleEmailBtn">
+                <span aria-hidden="true">+</span>
+                <span>Sample</span>
+              </button>
+            </div>
+            <p class="privacy-note">
+              This scanner runs in your browser. Add your email or phone as the source, paste copied bill reminders, receipts, or text messages, then review what BillPocket finds before importing.
+            </p>
+            <div class="capture-source-grid" id="captureSourceGrid"></div>
+            <div class="capture-insights" id="captureInsights"></div>
+            <div class="discovery-source-grid">
+              <label class="field">
+                <span>Email address</span>
+                <input id="discoveryEmailInput" type="email" placeholder="you@example.com" autocomplete="email">
+              </label>
+              <label class="field">
+                <span>Phone number</span>
+                <input id="discoveryPhoneInput" type="tel" placeholder="555-123-4567" autocomplete="tel">
+              </label>
+            </div>
+            <div class="paste-helper-grid">
+              <div class="paste-helper-step">
+                <strong>1</strong>
+                <span>Copy a bill email or text</span>
+              </div>
+              <div class="paste-helper-step">
+                <strong>2</strong>
+                <span>Tap paste below</span>
+              </div>
+              <div class="paste-helper-step">
+                <strong>3</strong>
+                <span>Review and import</span>
+              </div>
+            </div>
+            <div class="paste-toolbar">
+              <button class="primary-btn" type="button" id="pasteClipboardBtn">
+                <span aria-hidden="true">@</span>
+                <span>Paste from clipboard</span>
+              </button>
+              <button class="secondary-btn" type="button" id="findSubscriptionsBtn">
+                <span aria-hidden="true">$</span>
+                <span>Find subscriptions</span>
+              </button>
+              <button class="secondary-btn" type="button" id="findPurchasesBtn">
+                <span aria-hidden="true">#</span>
+                <span>Find purchases</span>
+              </button>
+              <button class="secondary-btn" type="button" id="focusPasteBtn">
+                <span aria-hidden="true">+</span>
+                <span>Manual paste</span>
+              </button>
+              <button class="secondary-btn" type="button" id="attachmentImportBtn">
+                <span aria-hidden="true">^</span>
+                <span>Add file</span>
+              </button>
+              <input id="emailFileInput" type="file" accept=".txt,.eml,.csv,.ics,.pdf,image/*" multiple hidden>
+              <span class="paste-status" id="emailPasteStatus">Ready for copied email</span>
+            </div>
+            <label class="field email-paste-field paste-drop-zone" id="emailPasteZone">
+              <span>Email, receipt, or text message content</span>
+              <textarea id="emailPasteInput" rows="12" placeholder="Tap Manual paste, then press and hold here to paste copied bill emails, subscription receipts, SMS reminders, or statement text. BillPocket will scan after you paste."></textarea>
+            </label>
+            <div class="scan-actions">
+              <button class="primary-btn" type="button" id="scanEmailsBtn">
+                <span aria-hidden="true">@</span>
+                <span>Scan text</span>
+              </button>
+              <button class="secondary-btn" type="button" id="importScannedBillsBtn">
+                <span aria-hidden="true">OK</span>
+                <span>Import checked</span>
+              </button>
+              <button class="ghost-btn" type="button" id="clearEmailScanBtn">
+                <span aria-hidden="true">x</span>
+                <span>Clear</span>
+              </button>
+            </div>
+          </section>
+
+          <section class="wide-panel email-results-panel" aria-labelledby="emailResultsHeading">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Review before saving</p>
+                <h2 id="emailResultsHeading">Found bills</h2>
+              </div>
+              <span class="status-tag manual" id="emailScanSummary">No scan yet</span>
+            </div>
+            <div class="scan-results" id="emailScanResults"></div>
+          </section>
+        </section>
+
+        <section class="view" id="paymentsView" data-title="History">
+          <div class="section-toolbar">
+            <div>
+              <p class="eyebrow">Scheduled and sent</p>
+              <h2>Payment history</h2>
+            </div>
+            <button class="secondary-btn small" type="button" id="exportPaymentsBtn">
+              <span aria-hidden="true">v</span>
+              <span>Export CSV</span>
+            </button>
+          </div>
+          <div class="responsive-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Biller</th>
+                  <th>Amount</th>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th>Reference</th>
+                </tr>
+              </thead>
+              <tbody id="paymentRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <nav class="mobile-nav" aria-label="Mobile views">
+      <button class="mobile-nav-item active" type="button" data-view="dashboard">
+        <span aria-hidden="true">#</span>
+        <span>Today</span>
+      </button>
+      <button class="mobile-nav-item" type="button" data-view="bills">
+        <span aria-hidden="true">[]</span>
+        <span>Bills</span>
+      </button>
+      <button class="mobile-nav-item" type="button" data-view="budget">
+        <span aria-hidden="true">%</span>
+        <span>Plan</span>
+      </button>
+      <button class="mobile-nav-item" type="button" data-view="connections">
+        <span aria-hidden="true">&lt;&gt;</span>
+        <span>Sync</span>
+      </button>
+      <button class="mobile-nav-item" type="button" data-view="email">
+        <span aria-hidden="true">@</span>
+        <span>Email</span>
+      </button>
+      <button class="mobile-nav-item" type="button" data-view="payments">
+        <span aria-hidden="true">$</span>
+        <span>Log</span>
+      </button>
+    </nav>
+
+    <dialog class="modal" id="billModal">
+      <form method="dialog" class="modal-panel" id="billForm">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">Bill details</p>
+            <h2 id="billModalTitle">Add bill</h2>
+          </div>
+          <button class="icon-btn" type="button" data-close-modal="billModal" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </div>
+
+        <input type="hidden" id="billIdInput">
+        <div class="form-grid">
+          <label class="field">
+            <span>Biller</span>
+            <input id="billNameInput" type="text" required placeholder="Electric company">
+          </label>
+          <label class="field">
+            <span>Category</span>
+            <select id="billCategoryInput" required>
+              <option value="utilities">Utilities</option>
+              <option value="rent">Rent</option>
+              <option value="mortgage">Mortgage</option>
+              <option value="phone">Phone</option>
+              <option value="loan">Loan</option>
+              <option value="insurance">Insurance</option>
+              <option value="credit">Credit card</option>
+              <option value="subscription">Subscription</option>
+              <option value="medical">Medical</option>
+              <option value="tax">Taxes</option>
+              <option value="childcare">Childcare</option>
+              <option value="purchase">Online purchase</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Amount</span>
+            <input id="billAmountInput" type="number" min="0" step="0.01" required placeholder="125.00">
+          </label>
+          <label class="field">
+            <span>Due day</span>
+            <input id="billDueDayInput" type="number" min="1" max="31" required placeholder="15">
+          </label>
+          <label class="field">
+            <span>Frequency</span>
+            <select id="billFrequencyInput">
+              <option value="monthly">Monthly</option>
+              <option value="quarterly">Quarterly</option>
+              <option value="annual">Annual</option>
+              <option value="one-time">One time</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Connected service</span>
+            <select id="billProviderInput">
+              <option value="manual">Manual</option>
+              <option value="brightgrid">BrightGrid Utilities</option>
+              <option value="rentnest">RentNest Portal</option>
+              <option value="homekey">HomeKey Mortgage</option>
+              <option value="northstar">NorthStar Loans</option>
+              <option value="clearcard">ClearCard</option>
+              <option value="sureline">SureLine Insurance</option>
+            </select>
+          </label>
+        </div>
+
+        <label class="check-row">
+          <input id="billAutopayInput" type="checkbox">
+          <span>Autopay enabled</span>
+        </label>
+
+        <label class="field">
+          <span>Notes</span>
+          <textarea id="billNotesInput" rows="3" placeholder="Account ending, confirmation notes, split payment details"></textarea>
+        </label>
+
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" data-close-modal="billModal">Cancel</button>
+          <button class="primary-btn" type="submit">
+            <span aria-hidden="true">OK</span>
+            <span>Save bill</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="bankModal">
+      <form method="dialog" class="modal-panel" id="bankForm">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">Secure link</p>
+            <h2>Connect bank</h2>
+          </div>
+          <button class="icon-btn" type="button" data-close-modal="bankModal" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </div>
+        <div class="provider-options">
+          <label class="provider-option">
+            <input type="radio" name="bankProvider" value="plaid" checked>
+            <span>
+              <strong>Plaid Link</strong>
+              <small>Bank account verification</small>
+            </span>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="bankProvider" value="stripe">
+            <span>
+              <strong>Stripe Financial Connections</strong>
+              <small>Payment account linking</small>
+            </span>
+          </label>
+          <label class="provider-option">
+            <input type="radio" name="bankProvider" value="manual">
+            <span>
+              <strong>Manual test account</strong>
+              <small>Prototype payment source</small>
+            </span>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" data-close-modal="bankModal">Cancel</button>
+          <button class="primary-btn" type="submit">
+            <span aria-hidden="true">&lt;&gt;</span>
+            <span>Link account</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog class="modal" id="payModal">
+      <form method="dialog" class="modal-panel" id="payForm">
+        <div class="modal-heading">
+          <div>
+            <p class="eyebrow">Bill payment</p>
+            <h2 id="payModalTitle">Pay bill</h2>
+          </div>
+          <button class="icon-btn" type="button" data-close-modal="payModal" aria-label="Close">
+            <span aria-hidden="true">x</span>
+          </button>
+        </div>
+        <input type="hidden" id="payBillIdInput">
+        <div class="payment-summary" id="paymentSummary"></div>
+        <div class="form-grid">
+          <label class="field">
+            <span>Amount</span>
+            <input id="paymentAmountInput" type="number" min="0" step="0.01" required>
+          </label>
+          <label class="field">
+            <span>Payment date</span>
+            <input id="paymentDateInput" type="date" required>
+          </label>
+          <label class="field">
+            <span>Source account</span>
+            <select id="paymentAccountInput" required></select>
+          </label>
+          <label class="field">
+            <span>Method</span>
+            <select id="paymentMethodInput">
+              <option value="ACH">ACH</option>
+              <option value="Debit card">Debit card</option>
+              <option value="Check draft">Check draft</option>
+            </select>
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" data-close-modal="payModal">Cancel</button>
+          <button class="primary-btn" type="submit">
+            <span aria-hidden="true">$</span>
+            <span>Schedule payment</span>
+          </button>
+        </div>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="app.js"></script>
+  </body>
+</html>

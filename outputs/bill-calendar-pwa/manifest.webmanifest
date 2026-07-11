@@ -1,0 +1,17 @@
+{
+  "name": "BillPocket",
+  "short_name": "BillPocket",
+  "description": "Phone-first bill manager with quick pay, email bill scanning, due-date sync, budget outlook, and payment history.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#f7f8fb",
+  "theme_color": "#0f766e",
+  "icons": [
+    {
+      "src": "assets/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
