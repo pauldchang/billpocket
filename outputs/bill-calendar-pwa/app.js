@@ -290,6 +290,7 @@ const els = {
   quickPayDate: document.getElementById("quickPayDate"),
   quickPayAmount: document.getElementById("quickPayAmount"),
   quickPayBtn: document.getElementById("quickPayBtn"),
+  quickMarkPaidBtn: document.getElementById("quickMarkPaidBtn"),
   heroStrip: document.getElementById("heroStrip"),
   metricGrid: document.getElementById("metricGrid"),
   calendarGrid: document.getElementById("calendarGrid"),
@@ -317,6 +318,8 @@ const els = {
   activityList: document.getElementById("activityList"),
   accountList: document.getElementById("accountList"),
   paymentRows: document.getElementById("paymentRows"),
+  dataBackupStatus: document.getElementById("dataBackupStatus"),
+  restoreDataInput: document.getElementById("restoreDataInput"),
   bankStatusDot: document.getElementById("bankStatusDot"),
   bankStatusTitle: document.getElementById("bankStatusTitle"),
   bankStatusMeta: document.getElementById("bankStatusMeta"),
@@ -338,23 +341,36 @@ function loadState() {
       return structuredClone(seedState);
     }
     const parsed = JSON.parse(stored);
-    const seed = structuredClone(seedState);
-    return {
-      ...seed,
-      ...parsed,
-      settings: { ...seed.settings, ...(parsed.settings || {}) },
-      services: mergeById(parsed.services, seed.services),
-      captureRules: { ...(parsed.captureRules || {}) },
-      captureSources: mergeById(parsed.captureSources, seed.captureSources)
-    };
+    return hydrateState(parsed);
   } catch {
     return structuredClone(seedState);
   }
 }
 
+function hydrateState(parsed = {}) {
+  const seed = structuredClone(seedState);
+  const source = parsed && typeof parsed === "object" ? parsed : {};
+  return {
+    ...seed,
+    ...source,
+    settings: { ...seed.settings, ...(source.settings || {}) },
+    bills: Array.isArray(source.bills) ? source.bills : seed.bills,
+    services: mergeById(source.services, seed.services),
+    accounts: Array.isArray(source.accounts) ? source.accounts : seed.accounts,
+    payments: Array.isArray(source.payments) ? source.payments : seed.payments,
+    snapshots: Array.isArray(source.snapshots) ? source.snapshots : seed.snapshots,
+    emailScanHistory: Array.isArray(source.emailScanHistory) ? source.emailScanHistory : seed.emailScanHistory,
+    captureRules: { ...(source.captureRules || {}) },
+    captureSources: mergeById(source.captureSources, seed.captureSources),
+    activity: Array.isArray(source.activity) ? source.activity : seed.activity
+  };
+}
+
 function mergeById(savedItems = [], defaultItems = []) {
-  const byId = new Map(defaultItems.map((item) => [item.id, { ...item }]));
-  savedItems.forEach((item) => {
+  const defaults = Array.isArray(defaultItems) ? defaultItems : [];
+  const saved = Array.isArray(savedItems) ? savedItems : [];
+  const byId = new Map(defaults.map((item) => [item.id, { ...item }]));
+  saved.forEach((item) => {
     if (!item?.id) return;
     byId.set(item.id, { ...(byId.get(item.id) || {}), ...item });
   });
@@ -440,16 +456,18 @@ function getBillDueDateForMonth(bill, monthDate) {
   return new Date(targetYear, targetMonth, day);
 }
 
-function getUpcomingBills(days = 45) {
+function getUpcomingBills(days = 45, options = {}) {
   const today = new Date();
   const results = [];
-  for (let offset = 0; offset <= Math.ceil(days / 31) + 1; offset += 1) {
+  const lateDays = Number.isFinite(Number(options.lateDays)) ? Number(options.lateDays) : 7;
+  const startOffset = lateDays > today.getDate() ? -1 : 0;
+  for (let offset = startOffset; offset <= Math.ceil(days / 31) + 1; offset += 1) {
     const monthDate = addMonths(today, offset);
     state.bills.forEach((bill) => {
       const dueDate = getBillDueDateForMonth(bill, monthDate);
       if (!dueDate) return;
       const diff = dayDiff(today, dueDate);
-      if (diff >= -7 && diff <= days) {
+      if (diff >= -lateDays && diff <= days) {
         results.push({ bill, dueDate, diff });
       }
     });
@@ -476,6 +494,26 @@ function getForecast(months = 6) {
     const reserveGap = Math.max(0, Number(state.settings.reserveTarget || 0) - afterBills);
     return { month, bills, total, afterBills, reserveGap };
   });
+}
+
+function getMonthStatus(monthDate = new Date()) {
+  const bills = getBillsForMonth(monthDate);
+  const paid = bills.filter((item) => getPaidRecordForPeriod(item.bill, item.dueDate));
+  const open = bills.filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
+  const total = bills.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
+  const paidTotal = paid.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
+  const openTotal = open.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
+  const afterOpen = Number(state.settings.monthlyIncome || 0) - openTotal;
+
+  return {
+    bills,
+    paid,
+    open,
+    total,
+    paidTotal,
+    openTotal,
+    afterOpen
+  };
 }
 
 function isSameDay(a, b) {
@@ -510,24 +548,32 @@ function render() {
   renderEmailScan();
   renderConnections();
   renderPayments();
+  renderDataBackupStatus();
 }
 
 function renderPocketOverview() {
-  const upcoming = getUpcomingBills(60);
+  const monthStatus = getMonthStatus(new Date());
+  const upcoming = getUpcomingBills(60, { lateDays: 45 }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
   const next = upcoming[0];
-  const forecast = getForecast(1)[0];
   const connectedServices = state.services.filter((service) => service.status === "connected").length;
   const subscriptionTotal = getBillsForMonth(new Date())
     .filter((item) => item.bill.category === "subscription")
     .reduce((sum, item) => sum + Number(item.bill.amount), 0);
+  const purchaseTotal = getBillsForMonth(new Date())
+    .filter((item) => item.bill.category === "purchase")
+    .reduce((sum, item) => sum + Number(item.bill.amount), 0);
 
   if (!next) {
-    els.quickPayHeading.textContent = "No bills queued";
-    els.quickPayMeta.textContent = "Add a bill or sync a biller to build your plan.";
+    els.quickPayHeading.textContent = "No unpaid bills queued";
+    els.quickPayMeta.textContent = "Everything in the current queue is marked paid.";
     els.quickPayDate.textContent = "Clear";
     els.quickPayAmount.textContent = "$0.00";
     els.quickPayBtn.disabled = true;
     els.quickPayBtn.removeAttribute("data-next-bill");
+    els.quickPayBtn.removeAttribute("data-next-due-date");
+    els.quickMarkPaidBtn.disabled = true;
+    els.quickMarkPaidBtn.removeAttribute("data-next-bill");
+    els.quickMarkPaidBtn.removeAttribute("data-next-due-date");
   } else {
     const dueText = next.diff < 0 ? `${Math.abs(next.diff)} days late` : next.diff === 0 ? "Due today" : `Due in ${next.diff} days`;
     els.quickPayHeading.textContent = next.bill.name;
@@ -536,20 +582,31 @@ function renderPocketOverview() {
     els.quickPayAmount.textContent = formatMoney(next.bill.amount);
     els.quickPayBtn.disabled = false;
     els.quickPayBtn.dataset.nextBill = next.bill.id;
+    els.quickPayBtn.dataset.nextDueDate = toDateInputValue(next.dueDate);
+    els.quickMarkPaidBtn.disabled = false;
+    els.quickMarkPaidBtn.dataset.nextBill = next.bill.id;
+    els.quickMarkPaidBtn.dataset.nextDueDate = toDateInputValue(next.dueDate);
   }
 
-  const afterBills = forecast ? forecast.afterBills : Number(state.settings.monthlyIncome || 0);
   const stripItems = [
     {
-      label: "Month bills",
-      value: forecast ? formatMoney(forecast.total) : "$0.00"
+      label: "Open bills",
+      value: formatMoney(monthStatus.openTotal)
     },
     {
-      label: "Left over",
-      value: formatMoney(afterBills)
+      label: "Paid",
+      value: formatMoney(monthStatus.paidTotal)
     },
     {
-      label: "Subscriptions",
+      label: "After open",
+      value: formatMoney(monthStatus.afterOpen)
+    },
+    {
+      label: "Purchases",
+      value: formatMoney(purchaseTotal)
+    },
+    {
+      label: "Subs",
       value: formatMoney(subscriptionTotal)
     },
     {
@@ -577,33 +634,30 @@ function renderStatus() {
 }
 
 function renderMetrics() {
-  const monthBills = getBillsForMonth(new Date());
-  const monthTotal = monthBills.reduce((sum, item) => sum + Number(item.bill.amount), 0);
-  const dueSoon = getUpcomingBills(7);
-  const autopayTotal = monthBills
-    .filter((item) => item.bill.autopay)
-    .reduce((sum, item) => sum + Number(item.bill.amount), 0);
-  const connectedServices = state.services.filter((service) => service.status === "connected").length;
+  const monthStatus = getMonthStatus(new Date());
+  const dueSoon = getUpcomingBills(7, { lateDays: 45 }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
+  const purchases = monthStatus.bills.filter((item) => item.bill.category === "purchase");
+  const purchaseTotal = purchases.reduce((sum, item) => sum + Number(item.bill.amount), 0);
   const metrics = [
     {
-      label: "Bills",
-      value: formatMoney(monthTotal),
-      meta: `${monthBills.length} this month`
+      label: "Open",
+      value: formatMoney(monthStatus.openTotal),
+      meta: `${monthStatus.open.length} unpaid this month`
     },
     {
       label: "Due soon",
       value: formatMoney(dueSoon.reduce((sum, item) => sum + Number(item.bill.amount), 0)),
-      meta: `${dueSoon.length} in 7 days`
+      meta: `${dueSoon.length} late or due in 7 days`
     },
     {
-      label: "Autopay",
-      value: formatMoney(autopayTotal),
-      meta: "Already covered"
+      label: "Paid",
+      value: formatMoney(monthStatus.paidTotal),
+      meta: `${monthStatus.paid.length} marked paid`
     },
     {
-      label: "Sync",
-      value: `${connectedServices}/${state.services.length}`,
-      meta: state.bankConnected ? "Ready to pay" : "Link bank"
+      label: "Purchases",
+      value: formatMoney(purchaseTotal),
+      meta: `${purchases.length} this month`
     }
   ];
 
@@ -650,7 +704,7 @@ function renderCalendar() {
         ${bills.slice(0, 3).map((bill) => {
           const paid = Boolean(getPaidRecordForPeriod(bill, date));
           return `
-            <button class="bill-pill ${bill.category} ${paid ? "is-paid" : ""}" type="button" data-pay-bill="${bill.id}" title="${escapeHtml(bill.name)} ${formatMoney(bill.amount)}">
+            <button class="bill-pill ${bill.category} ${paid ? "is-paid" : ""}" type="button" data-pay-bill="${bill.id}" data-due-date="${toDateInputValue(date)}" title="${escapeHtml(bill.name)} ${formatMoney(bill.amount)}">
               ${escapeHtml(bill.name)}
             </button>
           `;
@@ -664,7 +718,9 @@ function renderCalendar() {
 }
 
 function renderAgenda() {
-  const upcoming = getUpcomingBills(45).slice(0, 9);
+  const upcoming = getUpcomingBills(45, { lateDays: 45 })
+    .filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate) || item.diff >= 0)
+    .slice(0, 9);
   if (!upcoming.length) {
     els.agendaList.innerHTML = `<div class="empty-state">No upcoming bills found.</div>`;
     return;
@@ -682,18 +738,18 @@ function renderAgenda() {
         </div>
         ${paidRecord ? `
           <div class="agenda-actions">
-            <button class="ghost-btn small" type="button" data-unmark-bill-paid="${bill.id}">
+            <button class="ghost-btn small" type="button" data-unmark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">-</span>
               <span>Undo</span>
             </button>
           </div>
         ` : `
           <div class="agenda-actions">
-            <button class="primary-btn small" type="button" data-pay-bill="${bill.id}">
+            <button class="primary-btn small" type="button" data-pay-bill="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">$</span>
               <span>Pay</span>
             </button>
-            <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}">
+            <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">OK</span>
               <span>Mark paid</span>
             </button>
@@ -778,17 +834,17 @@ function renderBills() {
           </div>
         </div>
         <div class="bill-actions">
-          <button class="primary-btn small" type="button" data-pay-bill="${bill.id}">
+          <button class="primary-btn small" type="button" data-pay-bill="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
             <span aria-hidden="true">$</span>
             <span>Pay</span>
           </button>
           ${paidRecord ? `
-            <button class="secondary-btn small" type="button" data-unmark-bill-paid="${bill.id}">
+            <button class="secondary-btn small" type="button" data-unmark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">-</span>
               <span>Undo paid</span>
             </button>
           ` : `
-            <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}">
+            <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">OK</span>
               <span>Mark paid</span>
             </button>
@@ -1983,7 +2039,7 @@ function openBankModal() {
   document.getElementById("bankModal").showModal();
 }
 
-function openPayModal(billId) {
+function openPayModal(billId, dueDateValue) {
   if (!state.bankConnected || !state.accounts.length) {
     showToast("Connect a bank account before scheduling a payment.");
     openBankModal();
@@ -1993,9 +2049,10 @@ function openPayModal(billId) {
   const bill = state.bills.find((item) => item.id === billId);
   if (!bill) return;
 
-  const dueDate = getNextDueDate(bill);
+  const dueDate = resolveActionDueDate(bill, dueDateValue);
   document.getElementById("payModalTitle").textContent = `Pay ${bill.name}`;
   document.getElementById("payBillIdInput").value = bill.id;
+  document.getElementById("payDueDateInput").value = toDateInputValue(dueDate);
   document.getElementById("paymentAmountInput").value = Number(bill.amount).toFixed(2);
   document.getElementById("paymentDateInput").value = toDateInputValue(new Date());
   document.getElementById("paymentSummary").innerHTML = `
@@ -2071,11 +2128,21 @@ function deleteBill(billId) {
   showToast(`${bill.name} removed.`);
 }
 
-function markBillPaidForPeriod(billId) {
+function resolveActionDueDate(bill, dueDateValue) {
+  if (dueDateValue) {
+    const parsed = dueDateValue instanceof Date ? dueDateValue : parseLocalDate(String(dueDateValue));
+    if (!Number.isNaN(parsed.getTime())) {
+      return parsed;
+    }
+  }
+  return getNextDueDate(bill);
+}
+
+function markBillPaidForPeriod(billId, dueDateValue) {
   const bill = state.bills.find((item) => item.id === billId);
   if (!bill) return;
 
-  const dueDate = getNextDueDate(bill);
+  const dueDate = resolveActionDueDate(bill, dueDateValue);
   const existing = getPaidRecordForPeriod(bill, dueDate);
   if (existing) {
     showToast(`${bill.name} is already marked paid for this period.`);
@@ -2103,11 +2170,11 @@ function markBillPaidForPeriod(billId) {
   showToast(`${bill.name} marked paid for this period.`);
 }
 
-function unmarkBillPaidForPeriod(billId) {
+function unmarkBillPaidForPeriod(billId, dueDateValue) {
   const bill = state.bills.find((item) => item.id === billId);
   if (!bill) return;
 
-  const dueDate = getNextDueDate(bill);
+  const dueDate = resolveActionDueDate(bill, dueDateValue);
   const periodKey = getPeriodKey(dueDate);
   const before = state.payments.length;
   state.payments = state.payments.filter((payment) => {
@@ -2158,7 +2225,7 @@ function schedulePaymentFromForm() {
   const bill = state.bills.find((item) => item.id === document.getElementById("payBillIdInput").value);
   const account = state.accounts.find((item) => item.id === document.getElementById("paymentAccountInput").value);
   if (!bill || !account) return;
-  const dueDate = getNextDueDate(bill);
+  const dueDate = resolveActionDueDate(bill, document.getElementById("payDueDateInput").value);
 
   const payment = {
     id: makeId("pay"),
@@ -2303,6 +2370,76 @@ function exportPayments() {
   exportCsv("billflow-payment-log.csv", rows);
 }
 
+function renderDataBackupStatus() {
+  if (!els.dataBackupStatus) return;
+  els.dataBackupStatus.textContent = `${state.bills.length} bills, ${state.payments.length} payments`;
+}
+
+function exportJson(filename, payload) {
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function buildDataBackup() {
+  return {
+    app: "BillPocket",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    state
+  };
+}
+
+function exportDataBackup() {
+  addActivity("Backup exported", "Local BillPocket data downloaded");
+  saveState();
+  exportJson(`billpocket-backup-${toDateInputValue(new Date())}.json`, buildDataBackup());
+  renderDataBackupStatus();
+  showToast("Backup file downloaded.");
+}
+
+function getBackupState(payload) {
+  if (!payload || typeof payload !== "object") return null;
+  const source = payload.state || payload.data || payload;
+  if (!source || typeof source !== "object") return null;
+  const hasBillPocketData = Array.isArray(source.bills)
+    || Array.isArray(source.payments)
+    || Array.isArray(source.services)
+    || source.settings;
+  return hasBillPocketData ? source : null;
+}
+
+async function importDataBackup(files) {
+  const [file] = [...(files || [])];
+  if (!file) return;
+
+  try {
+    const payload = JSON.parse(await file.text());
+    const backupState = getBackupState(payload);
+    if (!backupState) {
+      showToast("That file does not look like a BillPocket backup.");
+      return;
+    }
+
+    const ok = window.confirm("Import this backup and replace the BillPocket data on this device?");
+    if (!ok) return;
+
+    state = hydrateState(backupState);
+    addActivity("Backup imported", `${file.name} restored on this device`);
+    saveState();
+    render();
+    showToast("Backup imported.");
+  } catch {
+    showToast("Could not read that backup file.");
+  } finally {
+    els.restoreDataInput.value = "";
+  }
+}
+
 function bindEvents() {
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
@@ -2321,7 +2458,11 @@ function bindEvents() {
   document.getElementById("addBillBtn").addEventListener("click", () => openBillModal());
   els.quickPayBtn.addEventListener("click", () => {
     const billId = els.quickPayBtn.dataset.nextBill;
-    if (billId) openPayModal(billId);
+    if (billId) openPayModal(billId, els.quickPayBtn.dataset.nextDueDate);
+  });
+  els.quickMarkPaidBtn.addEventListener("click", () => {
+    const billId = els.quickMarkPaidBtn.dataset.nextBill;
+    if (billId) markBillPaidForPeriod(billId, els.quickMarkPaidBtn.dataset.nextDueDate);
   });
   document.getElementById("connectBankBtn").addEventListener("click", openBankModal);
   document.getElementById("bankConnectPanelBtn").addEventListener("click", openBankModal);
@@ -2331,6 +2472,9 @@ function bindEvents() {
   document.getElementById("saveBudgetSettingsBtn").addEventListener("click", saveBudgetSettings);
   document.getElementById("exportBudgetBtn").addEventListener("click", exportBudget);
   document.getElementById("exportPaymentsBtn").addEventListener("click", exportPayments);
+  document.getElementById("exportDataBtn").addEventListener("click", exportDataBackup);
+  document.getElementById("importDataBtn").addEventListener("click", () => els.restoreDataInput.click());
+  els.restoreDataInput.addEventListener("change", (event) => importDataBackup(event.target.files));
   document.getElementById("pasteClipboardBtn").addEventListener("click", pasteFromClipboard);
   document.getElementById("findSubscriptionsBtn").addEventListener("click", findSubscriptionsFromContact);
   document.getElementById("findPurchasesBtn").addEventListener("click", findPurchasesFromReceipts);
@@ -2382,7 +2526,7 @@ function bindEvents() {
 
     const payButton = event.target.closest("[data-pay-bill]");
     if (payButton) {
-      openPayModal(payButton.dataset.payBill);
+      openPayModal(payButton.dataset.payBill, payButton.dataset.dueDate);
       return;
     }
 
@@ -2406,13 +2550,13 @@ function bindEvents() {
 
     const markPaidButton = event.target.closest("[data-mark-bill-paid]");
     if (markPaidButton) {
-      markBillPaidForPeriod(markPaidButton.dataset.markBillPaid);
+      markBillPaidForPeriod(markPaidButton.dataset.markBillPaid, markPaidButton.dataset.dueDate);
       return;
     }
 
     const unmarkPaidButton = event.target.closest("[data-unmark-bill-paid]");
     if (unmarkPaidButton) {
-      unmarkBillPaidForPeriod(unmarkPaidButton.dataset.unmarkBillPaid);
+      unmarkBillPaidForPeriod(unmarkPaidButton.dataset.unmarkBillPaid, unmarkPaidButton.dataset.dueDate);
       return;
     }
 

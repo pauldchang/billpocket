@@ -1074,6 +1074,21 @@ tbody tr:last-child td {
   font-weight: 800;
 }
 
+.data-panel {
+  margin-bottom: 14px;
+}
+
+.data-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.data-actions > button {
+  min-width: 152px;
+}
+
 .paste-drop-zone {
   padding: 12px;
   border: 1px dashed #99cfc7;
@@ -1504,10 +1519,21 @@ tbody tr:last-child td {
   background: #f6faf9;
 }
 
+.hero-pay .secondary-btn {
+  border-color: rgba(255, 255, 255, 0.34);
+  color: #fff;
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.hero-pay .secondary-btn:hover {
+  border-color: rgba(255, 255, 255, 0.52);
+  background: rgba(255, 255, 255, 0.22);
+}
+
 .hero-strip {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -1693,6 +1719,7 @@ tbody tr:last-child td {
 
   .discovery-source-grid,
   .paste-helper-grid,
+  .data-actions,
   .paste-toolbar {
     display: grid;
     grid-template-columns: 1fr;
@@ -1700,6 +1727,10 @@ tbody tr:last-child td {
 
   .paste-status {
     justify-content: center;
+    width: 100%;
+  }
+
+  .data-actions > button {
     width: 100%;
   }
 

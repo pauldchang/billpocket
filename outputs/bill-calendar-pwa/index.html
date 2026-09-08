@@ -92,6 +92,10 @@
                 <span aria-hidden="true">$</span>
                 <span>Pay now</span>
               </button>
+              <button class="secondary-btn full" type="button" id="quickMarkPaidBtn">
+                <span aria-hidden="true">OK</span>
+                <span>Mark paid</span>
+              </button>
             </div>
             <div class="hero-strip" id="heroStrip"></div>
           </section>
@@ -409,6 +413,26 @@
               <span>Export CSV</span>
             </button>
           </div>
+          <section class="wide-panel data-panel" aria-labelledby="dataToolsHeading">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Local data</p>
+                <h2 id="dataToolsHeading">Backup</h2>
+              </div>
+              <span class="status-tag manual" id="dataBackupStatus">Ready</span>
+            </div>
+            <div class="data-actions">
+              <button class="secondary-btn" type="button" id="exportDataBtn">
+                <span aria-hidden="true">v</span>
+                <span>Export backup</span>
+              </button>
+              <button class="ghost-btn" type="button" id="importDataBtn">
+                <span aria-hidden="true">^</span>
+                <span>Import backup</span>
+              </button>
+              <input id="restoreDataInput" type="file" accept="application/json,.json" hidden>
+            </div>
+          </section>
           <div class="responsive-table">
             <table>
               <thead>
@@ -598,6 +622,7 @@
           </button>
         </div>
         <input type="hidden" id="payBillIdInput">
+        <input type="hidden" id="payDueDateInput">
         <div class="payment-summary" id="paymentSummary"></div>
         <div class="form-grid">
           <label class="field">
