@@ -1,6 +1,10 @@
 # BillPocket Integration Notes
 
-This prototype is a static PWA. The updated UI is a phone-first bill manager with bank linking, biller syncing, payment scheduling, exports, local storage, and installable mobile behavior.
+This prototype is a static PWA. Bill tracking, pasted-email capture, paid marks, forecasts, backup restore, exports, and offline access work locally. Bank linking and payment scheduling are explicitly labeled demos. No live bank, mailbox, or biller connection is configured, and no money is sent. Sync controls do not change amounts or claim to fetch live data.
+
+Bills use a full `dueDate` as their recurrence anchor and retain `dueDay` for month-end clamping. Legacy monthly schedules and one-time month/year fields remain supported. Annual and quarterly bills recur from the chosen month. Editing an unchanged schedule preserves the original anchor and day.
+
+Run the dependency-free regression checks from the repository root with `node --test tests/billpocket.test.cjs`.
 
 Real money movement needs a backend and regulated providers. A production build should use tokenized bank access, never store raw credentials, and route payments through approved rails.
 
