@@ -94,13 +94,13 @@
             <div class="hero-pay">
               <span id="quickPayDate">Today</span>
               <strong id="quickPayAmount">$0.00</strong>
-              <button class="primary-btn full" type="button" id="quickPayBtn">
-                <span aria-hidden="true">$</span>
-                <span>Payment demo</span>
-              </button>
-              <button class="secondary-btn full" type="button" id="quickMarkPaidBtn">
+              <button class="primary-btn full" type="button" id="quickMarkPaidBtn">
                 <span aria-hidden="true">OK</span>
                 <span>Mark paid</span>
+              </button>
+              <button class="secondary-btn full" type="button" id="quickPayBtn">
+                <span aria-hidden="true">$</span>
+                <span>Payment demo</span>
               </button>
             </div>
             <div class="hero-strip" id="heroStrip"></div>
@@ -136,14 +136,22 @@
             <section class="agenda-panel" aria-labelledby="agendaHeading">
               <div class="panel-heading compact">
                 <div>
-                  <p class="eyebrow">Smart queue</p>
-                  <h2 id="agendaHeading">Pay next</h2>
+                  <p class="eyebrow">Payment status</p>
+                  <h2 id="agendaHeading">Your bills</h2>
                 </div>
                 <button class="icon-btn" type="button" id="syncDueDatesBtn" aria-label="Sync due dates">
                   <span aria-hidden="true">*</span>
                 </button>
               </div>
+              <div class="agenda-filters" role="group" aria-label="Bill status">
+                <button type="button" data-agenda-filter="upcoming" aria-pressed="true">Upcoming <span class="filter-count">0</span></button>
+                <button type="button" data-agenda-filter="overdue" aria-pressed="false">Overdue <span class="filter-count">0</span></button>
+                <button type="button" data-agenda-filter="paid" aria-pressed="false">Paid <span class="filter-count">0</span></button>
+              </div>
+              <p class="agenda-summary" id="agendaSummary" aria-live="polite"></p>
+              <button class="ghost-btn small" type="button" id="clearCalendarDateBtn" hidden>Back to upcoming</button>
               <div class="agenda-list" id="agendaList"></div>
+              <button class="secondary-btn full" type="button" id="agendaMoreBtn" hidden>Show more</button>
             </section>
           </div>
 

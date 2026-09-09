@@ -283,6 +283,9 @@ let displayDate = startOfMonth(new Date());
 let deferredInstallPrompt = null;
 let emailScanCandidates = [];
 let emailScanTimer = null;
+let agendaFilter = "upcoming";
+let agendaLimit = 6;
+let selectedAgendaDate = null;
 
 const els = {
   todayLabel: document.getElementById("todayLabel"),
@@ -727,7 +730,7 @@ function renderCalendar() {
     cells.push(`
       <div class="calendar-cell ${isSameDay(date, today) ? "is-today" : ""}">
         <div class="calendar-day-number">
-          <span>${day}</span>
+          <button class="calendar-date-btn" type="button" data-calendar-date="${key}" aria-label="${formatDate(date)}, ${bills.length} bills" aria-pressed="${selectedAgendaDate === key}">${day}</button>
           ${bills.length ? `<span>${formatMoney(total)}</span>` : ""}
         </div>
         ${bills.slice(0, 3).map((bill) => {
@@ -738,7 +741,7 @@ function renderCalendar() {
             </button>
           `;
         }).join("")}
-        ${bills.length > 3 ? `<span class="bill-pill other">+${bills.length - 3} more</span>` : ""}
+        ${bills.length > 3 ? `<button class="bill-pill other" type="button" data-calendar-date="${key}">+${bills.length - 3} more</button>` : ""}
       </div>
     `);
   }
@@ -746,12 +749,35 @@ function renderCalendar() {
   els.calendarGrid.innerHTML = cells.join("");
 }
 
+function getAgendaGroups() {
+  const groups = { upcoming: [], overdue: [], paid: [] };
+  getUpcomingBills(45, { lateDays: 45 }).forEach((item) => {
+    const group = getPaidRecordForPeriod(item.bill, item.dueDate) ? "paid" : item.diff < 0 ? "overdue" : "upcoming";
+    groups[group].push(item);
+  });
+  return groups;
+}
+
 function renderAgenda() {
-  const upcoming = getUpcomingBills(45, { lateDays: 45 })
-    .filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate) || item.diff >= 0)
-    .slice(0, 9);
+  const groups = getAgendaGroups();
+  const items = selectedAgendaDate ? getBillsForMonth(parseLocalDate(selectedAgendaDate))
+    .filter((item) => toDateInputValue(item.dueDate) === selectedAgendaDate)
+    .map((item) => ({ ...item, diff: dayDiff(new Date(), item.dueDate) })) : groups[agendaFilter];
+  document.querySelectorAll("[data-agenda-filter]").forEach((button) => {
+    button.setAttribute("aria-pressed", String(!selectedAgendaDate && button.dataset.agendaFilter === agendaFilter));
+    button.querySelector(".filter-count").textContent = groups[button.dataset.agendaFilter].length;
+  });
+  document.getElementById("agendaHeading").textContent = selectedAgendaDate ? formatDate(parseLocalDate(selectedAgendaDate)) : "Your bills";
+  const range = selectedAgendaDate ? "This day" : agendaFilter === "upcoming" ? "Next 45 days" : agendaFilter === "overdue" ? "Past 45 days" : "Recent bill periods";
+  const total = items.reduce((sum, item) => sum + Number(item.bill.amount), 0);
+  document.getElementById("agendaSummary").textContent = `${range} - ${items.length} bill${items.length === 1 ? "" : "s"} - ${formatMoney(total)}`;
+  const upcoming = items.slice(0, agendaLimit);
+  const moreButton = document.getElementById("agendaMoreBtn");
+  moreButton.hidden = items.length <= agendaLimit;
+  moreButton.textContent = `Show more (${Math.max(0, items.length - agendaLimit)})`;
+  document.getElementById("clearCalendarDateBtn").hidden = !selectedAgendaDate;
   if (!upcoming.length) {
-    els.agendaList.innerHTML = `<div class="empty-state">No upcoming bills found.</div>`;
+    els.agendaList.innerHTML = `<div class="empty-state">${selectedAgendaDate ? "No bills on this date." : agendaFilter === "paid" ? "No paid bills in this range." : agendaFilter === "overdue" ? "No overdue bills in this range." : "No unpaid bills due in the next 45 days."}</div>`;
     return;
   }
 
@@ -765,20 +791,20 @@ function renderAgenda() {
           <strong>${escapeHtml(bill.name)}</strong>
           <span>${formatDate(dueDate)} - ${formatMoney(bill.amount)}</span>
         </div>
-        ${paidRecord ? `
+        ${paidRecord?.manualMark ? `
           <div class="agenda-actions">
             <button class="ghost-btn small" type="button" data-unmark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">-</span>
               <span>Undo</span>
             </button>
           </div>
-        ` : `
+        ` : paidRecord ? "" : `
           <div class="agenda-actions">
-            <button class="primary-btn small" type="button" data-pay-bill="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
+            <button class="secondary-btn small" type="button" data-pay-bill="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">$</span>
               <span>Demo pay</span>
             </button>
-            <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
+            <button class="primary-btn small" type="button" data-mark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">OK</span>
               <span>Mark paid</span>
             </button>
@@ -1103,7 +1129,7 @@ function renderEmailScan() {
     return;
   }
 
-  const readyCount = emailScanCandidates.filter((item) => item.amount > 0 && item.dateFound).length;
+  const readyCount = emailScanCandidates.filter((item) => item.amountFound && item.dateFound).length;
   els.emailScanSummary.textContent = `${emailScanCandidates.length} found, ${readyCount} ready`;
   els.emailScanResults.innerHTML = emailScanCandidates.map((candidate) => {
     const match = getCandidateMatch(candidate);
@@ -1114,7 +1140,7 @@ function renderEmailScan() {
       <article class="scan-card ${match.status}" data-scan-card="${candidate.id}">
         <div class="scan-card-head">
           <label class="check-row scan-check">
-            <input type="checkbox" data-scan-select="${candidate.id}" checked>
+            <input type="checkbox" data-scan-select="${candidate.id}" ${candidate.selected === false ? "" : "checked"}>
             <span>Import</span>
           </label>
           <div class="scan-badges">
@@ -1137,7 +1163,7 @@ function renderEmailScan() {
           </label>
           <label class="field">
             <span>Amount</span>
-            <input type="number" min="0" step="0.01" data-scan-amount="${candidate.id}" value="${Number(candidate.amount || 0).toFixed(2)}">
+            <input type="number" min="0" step="0.01" required data-scan-amount="${candidate.id}" value="${candidate.amountFound ? Number(candidate.amount).toFixed(2) : ""}">
           </label>
           <label class="field">
             <span>Due date</span>
@@ -1161,6 +1187,7 @@ function renderEmailScan() {
           </label>
         </div>
         <p class="scan-source">${escapeHtml(candidate.source)}</p>
+        ${candidate.orderId ? `<p class="scan-source">Order ${escapeHtml(candidate.orderId)}</p>` : ""}
         ${candidate.ruleApplied ? `<p class="scan-learned">Using learned rule: prefer ${escapeHtml(getAmountTypeLabel(candidate.selectedAmountType))} for ${escapeHtml(candidate.name)}.</p>` : ""}
         <p class="scan-snippet">${escapeHtml(candidate.snippet)}</p>
       </article>
@@ -1169,6 +1196,7 @@ function renderEmailScan() {
 }
 
 function renderAmountChoiceOptions(candidate) {
+  if (!candidate.amountFound && !candidate.amountChoices?.length) return '<option value="">No amount detected</option>';
   const choices = candidate.amountChoices?.length ? candidate.amountChoices : [{
     value: candidate.amount || 0,
     type: candidate.selectedAmountType || "manual",
@@ -1205,10 +1233,20 @@ function getAmountTypeLabel(type) {
   return labels[type] || labels.generic;
 }
 
+function findMatchingCapturedBill(candidate) {
+  return state.bills.find((bill) => {
+    if (normalizeBillerKey(bill.name) !== normalizeBillerKey(candidate.name)) return false;
+    if (bill.frequency !== "one-time" && candidate.frequency !== "one-time") return true;
+    if (bill.frequency !== candidate.frequency) return false;
+    if (bill.orderId || candidate.orderId) return Boolean(bill.orderId && bill.orderId === candidate.orderId);
+    return candidate.dateFound && toDateInputValue(getNextDueDate(bill)) === toDateInputValue(candidate.dueDate)
+      && Math.abs(Number(bill.amount) - candidate.amount) < 0.01;
+  });
+}
+
 function getCandidateMatch(candidate) {
-  const exact = state.bills.find((bill) => bill.frequency !== "one-time"
-    && normalizeBillerKey(bill.name) === normalizeBillerKey(candidate.name));
-  if (exact && candidate.frequency !== "one-time") {
+  const exact = findMatchingCapturedBill(candidate);
+  if (exact) {
     return {
       status: "updates-existing",
       label: `Updates ${exact.name}`,
@@ -1218,10 +1256,11 @@ function getCandidateMatch(candidate) {
   }
 
   const possible = state.bills.find((bill) => {
+    if (bill.orderId && candidate.orderId && bill.orderId !== candidate.orderId) return false;
     const sameDue = Number(bill.dueDay) === Number(candidate.dueDay);
     const sameAmount = Math.abs(Number(bill.amount) - Number(candidate.amount || 0)) < 0.01;
     const relatedName = namesLookRelated(bill.name, candidate.name);
-    return (sameDue && sameAmount) || (relatedName && (sameDue || sameAmount));
+    return relatedName && (sameDue || sameAmount);
   });
 
   if (possible) {
@@ -1252,6 +1291,7 @@ function namesLookRelated(a, b) {
 }
 
 function scanEmailText(options = {}) {
+  window.clearTimeout(emailScanTimer);
   const text = els.emailPasteInput.value.trim();
   if (!text) {
     if (!options.silent) showToast("Paste one or more bill emails first.");
@@ -1442,6 +1482,7 @@ function updateScanAmountFromChoice(candidateId, choiceIndex) {
   if (!candidate || !choice) return;
 
   candidate.amount = choice.value;
+  candidate.amountFound = true;
   candidate.selectedAmountChoice = Number(choiceIndex);
   candidate.selectedAmountType = choice.type || "generic";
   const amountInput = document.querySelector(`[data-scan-amount="${candidate.id}"]`);
@@ -1465,7 +1506,8 @@ function parseBillingEmails(text, options = {}) {
   const seen = new Set();
 
   return candidates.filter((candidate) => {
-    const key = `${candidate.name.toLowerCase()}-${candidate.dueDay}-${Math.round(candidate.amount * 100)}`;
+    const key = JSON.stringify([normalizeBillerKey(candidate.name), candidate.orderId,
+      candidate.dateFound ? toDateInputValue(candidate.dueDate) : null, Math.round(candidate.amount * 100)]);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1473,28 +1515,44 @@ function parseBillingEmails(text, options = {}) {
 }
 
 function splitEmailBlocks(text) {
-  const normalized = text.replace(/\r/g, "").replace(/\u00a0/g, " ");
-  const pieces = normalized
-    .split(/\n(?=(?:From|Subject|Date|Sent):\s)/i)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 24);
+  const lines = text.replace(/\r/g, "").replace(/\u00a0/g, " ").split("\n");
+  const blocks = [];
+  let current = [];
+  let headers = new Set();
+  let hasBody = false;
+  const flush = () => {
+    const block = current.join("\n").trim();
+    if (block.length > 24) blocks.push(block);
+    current = [];
+    headers = new Set();
+    hasBody = false;
+  };
 
-  if (pieces.length > 1) return pieces;
-
-  return normalized
-    .split(/\n\s*-{3,}\s*\n|\n\s*_{3,}\s*\n/)
-    .map((part) => part.trim())
-    .filter((part) => part.length > 24);
+  for (const raw of lines) {
+    const line = raw.replace(/^\s*>\s?/, "");
+    const header = line.match(/^(from|to|subject|date|sent|cc):\s*/i)?.[1].toLowerCase();
+    if (/^\s*(?:[-_]{3,}(?:\s*(?:forwarded|original) message\s*[-_]+)?|begin forwarded message:)\s*$/i.test(line)) {
+      if (hasBody) flush();
+      continue;
+    }
+    if ((header === "from" || header === "subject") && (hasBody || headers.has(header))) flush();
+    if (header) headers.add(header);
+    else if (line.trim()) hasBody = true;
+    current.push(line);
+  }
+  flush();
+  return blocks;
 }
 
 function extractBillCandidate(block, options = {}) {
   const category = inferCategory(block);
-  const date = findDueDate(block) || (category === "purchase" ? findPurchaseDate(block) : null);
+  const date = category === "purchase" ? findPurchaseDate(block) || findDueDate(block) : findDueDate(block);
   let amountResult = findAmount(block);
   const name = findBillerName(block);
   amountResult = applyCaptureRule(name, amountResult);
 
-  if (!date && !amountResult.value) return null;
+  const amountFound = Boolean(amountResult.choices?.length);
+  if (!date && !amountFound) return null;
 
   const dueDate = date || new Date();
   const confidence = Math.min(96, 25 + (date ? 28 : 0) + Math.min(30, Math.round(amountResult.score / 3)) + (name !== "Unknown biller" ? 13 : 0));
@@ -1503,6 +1561,8 @@ function extractBillCandidate(block, options = {}) {
     id: makeId("scan"),
     name,
     amount: amountResult.value || 0,
+    amountFound,
+    orderId: block.match(/\border\s*(?:number|no\.?|id|#)\s*[:#]?\s*([a-z0-9][a-z0-9-]{4,})\b/i)?.[1].toUpperCase() || "",
     dueDay: dueDate.getDate(),
     dueDate,
     dateFound: Boolean(date),
@@ -1610,7 +1670,7 @@ function findAmount(text) {
 function buildAmountChoices(candidates) {
   const seen = new Set();
   return candidates
-    .filter((candidate) => Number.isFinite(candidate.value) && candidate.value > 0)
+    .filter((candidate) => Number.isFinite(candidate.value) && candidate.value >= 0)
     .map((candidate) => ({
       ...candidate,
       type: candidate.type || inferAmountType(`${candidate.label || ""} ${candidate.context || ""}`)
@@ -1640,6 +1700,15 @@ function addMinimumPaymentCandidates(candidates, text) {
     "payment minimum"
   ];
   const normalized = text.replace(/\r/g, "\n");
+
+  // An explicitly labeled value takes priority over nearby balances and fees.
+  const direct = /\b(?:minimum\s+(?:payment(?:\s+due)?|amount\s+due|due)|min\s+(?:payment(?:\s+due)?|due)|payment\s+minimum)\s*(?:is\s*)?[:=]?\s*(\$?\s*\d[\d,]*(?:\.\d{2})?)(?!\d|[./-]\d)/gi;
+  for (const match of normalized.matchAll(direct)) {
+    const value = Number(match[1].replace(/[$,\s]/g, ""));
+    if (Number.isFinite(value) && value >= 0 && value < 100000) {
+      candidates.push({ value, score: 500, index: match.index, type: "minimum", label: match[0].trim(), context: match[0] });
+    }
+  }
 
   labels.forEach((label) => {
     const labelRegex = new RegExp(label.replace(/\s+/g, "\\s+"), "gi");
@@ -1689,7 +1758,7 @@ function findMoneyMatches(text) {
 
   while ((match = pattern.exec(text)) !== null) {
     const value = Number(match[1].replaceAll(",", ""));
-    if (Number.isFinite(value) && value > 0 && value < 100000) {
+    if (Number.isFinite(value) && value >= 0 && value < 100000) {
       matches.push({
         value,
         index: match.index,
@@ -1703,8 +1772,12 @@ function findMoneyMatches(text) {
 
 function addAmountCandidate(candidates, text, index, rawMatch, rawAmount, baseScore, typeOverride = "") {
   const value = Number(String(rawAmount).replaceAll(",", ""));
-  if (!Number.isFinite(value) || value <= 0 || value >= 100000) return;
+  if (!Number.isFinite(value) || value < 0 || value >= 100000) return;
   const rawText = String(rawMatch || "").toLowerCase();
+  const numberIndex = index + rawMatch.lastIndexOf(rawAmount);
+  const trailing = text.slice(numberIndex + String(rawAmount).length, numberIndex + String(rawAmount).length + 10);
+  if (!rawText.includes("$") && (/^[/-]\d/.test(trailing)
+    || /\b(?:ending|account|due\s+date)\b|\border\s*(?:number\b|no\b|id\b|#)/.test(rawText))) return;
   const looksLikeDateNumber = !rawText.includes("$")
     && !String(rawAmount).includes(".")
     && value <= 31
@@ -1769,7 +1842,8 @@ function findDueDate(text) {
 function findPurchaseDate(text) {
   const dateToken = "((?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{4})?|\\d{1,2}[/-]\\d{1,2}(?:[/-]\\d{2,4})?|\\d{4}-\\d{1,2}-\\d{1,2})";
   const patterns = [
-    new RegExp(`(?:order date|ordered on|order placed|purchase date|purchased on|charged on|receipt date|delivered on|delivery date|arriving|arrives|shipped on)\\D{0,54}${dateToken}`, "i"),
+    new RegExp(`(?:order date|ordered on|order placed|purchase date|purchased on|charged on|receipt date)\\D{0,54}${dateToken}`, "i"),
+    new RegExp(`(?:delivered on|delivery date|arriving|arrives|shipped on)\\D{0,54}${dateToken}`, "i"),
     new RegExp(`(?:placed on|delivered|arrives by)\\s+${dateToken}`, "i")
   ];
 
@@ -1829,7 +1903,7 @@ function normalizeYear(year) {
 function findBillerName(text) {
   const fromLine = text.match(/^from:\s*(.+)$/im)?.[1] || "";
   const subjectLine = text.match(/^subject:\s*(.+)$/im)?.[1] || "";
-  const senderName = cleanBillerName(fromLine.replace(/<[^>]+>/g, ""));
+  const senderName = cleanBillerName(fromLine.replace(/<[^>]+>/g, "").replace(/[\w.+-]+@[\w.-]+/g, ""));
   if (senderName && !/no.?reply|notification|billing|customer service/i.test(senderName)) {
     return senderName;
   }
@@ -1857,6 +1931,7 @@ function cleanBillerName(value) {
     .replace(/\b\d{1,2}[/-]\d{1,2}(?:[/-]\d{2,4})?\b/g, " ")
     .replace(/\s+/g, " ")
     .trim()
+    .replace(/^[\s:.-]+|[\s:.-]+$/g, "")
     .split(/\s+/)
     .slice(0, 5)
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
@@ -1904,7 +1979,7 @@ function buildScanSource(block, date, amountResult, discoverySource = "", catego
   const found = [];
   if (discoverySource) found.push(`source ${discoverySource}`);
   if (date) found.push(`${category === "purchase" ? "date" : "due"} ${formatDate(date)}`);
-  if (amountResult.value) found.push(`${formatMoney(amountResult.value)} ${getAmountTypeLabel(amountResult.type)} from "${amountResult.label}"`);
+  if (amountResult.choices?.length) found.push(`${formatMoney(amountResult.value)} ${getAmountTypeLabel(amountResult.type)} from "${amountResult.label}"`);
   return found.length ? `Found ${found.join(" and ")}` : "Review details";
 }
 
@@ -1947,14 +2022,7 @@ function importScannedBills() {
     const selectedChoiceIndex = Number(document.querySelector(`[data-scan-amount-choice="${candidate.id}"]`)?.value || 0);
     const selectedChoice = candidate.amountChoices?.[selectedChoiceIndex];
     const selectedType = selectedChoice && Math.abs(Number(selectedChoice.value) - amount) < 0.01 ? selectedChoice.type : "manual";
-    const existing = state.bills.find((bill) => {
-      if (normalizeBillerKey(bill.name) !== normalizeBillerKey(name)) return false;
-      if (frequency === "one-time" || bill.frequency === "one-time") {
-        return frequency === bill.frequency && toDateInputValue(getNextDueDate(bill)) === dueDateValue
-          && Math.abs(Number(bill.amount) - amount) < 0.01;
-      }
-      return true;
-    });
+    const existing = findMatchingCapturedBill({ ...candidate, name, frequency, amount, dueDate, dateFound: true });
 
     const bill = {
       ...existing,
@@ -1972,6 +2040,7 @@ function importScannedBills() {
     };
 
     if (frequency === "one-time") {
+      bill.orderId = candidate.orderId || existing?.orderId || "";
       bill.dueDate = dueDateValue;
       bill.oneTimeMonth = dueDate.getMonth();
       bill.oneTimeYear = dueDate.getFullYear();
@@ -2542,6 +2611,27 @@ function bindEvents() {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
 
+  document.querySelectorAll("[data-agenda-filter]").forEach((button) => {
+    button.addEventListener("click", () => {
+      agendaFilter = button.dataset.agendaFilter;
+      selectedAgendaDate = null;
+      agendaLimit = 6;
+      renderCalendar();
+      renderAgenda();
+    });
+  });
+  document.getElementById("agendaMoreBtn").addEventListener("click", () => {
+    agendaLimit += 6;
+    renderAgenda();
+  });
+  document.getElementById("clearCalendarDateBtn").addEventListener("click", () => {
+    selectedAgendaDate = null;
+    agendaFilter = "upcoming";
+    agendaLimit = 6;
+    renderCalendar();
+    renderAgenda();
+  });
+
   document.getElementById("prevMonthBtn").addEventListener("click", () => {
     displayDate = addMonths(displayDate, -1);
     renderCalendar();
@@ -2615,6 +2705,15 @@ function bindEvents() {
   });
 
   document.body.addEventListener("click", (event) => {
+    const calendarDate = event.target.closest("[data-calendar-date]");
+    if (calendarDate) {
+      selectedAgendaDate = calendarDate.dataset.calendarDate;
+      agendaLimit = 6;
+      renderCalendar();
+      renderAgenda();
+      document.querySelector(".agenda-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+      return;
+    }
     const closeButton = event.target.closest("[data-close-modal]");
     if (closeButton) {
       closeModal(closeButton.dataset.closeModal);
@@ -2686,6 +2785,25 @@ function bindEvents() {
     if (amountChoice) {
       updateScanAmountFromChoice(amountChoice.dataset.scanAmountChoice, amountChoice.value);
     }
+  });
+
+  document.body.addEventListener("input", (event) => {
+    const input = event.target;
+    const fields = { scanName: "name", scanCategory: "category", scanFrequency: "frequency" };
+    const key = Object.keys(input.dataset).find((name) => name in fields || ["scanAmount", "scanDueDate", "scanSelect"].includes(name));
+    const candidate = key && emailScanCandidates.find((item) => item.id === input.dataset[key]);
+    if (!candidate) return;
+    if (key in fields) candidate[fields[key]] = input.value;
+    else if (key === "scanAmount") {
+      candidate.amount = Number(input.value);
+      candidate.amountFound = input.value !== "" && input.validity.valid;
+    } else if (key === "scanDueDate") {
+      candidate.dateFound = Boolean(input.value) && input.validity.valid;
+      if (candidate.dateFound) {
+        candidate.dueDate = parseLocalDate(input.value);
+        candidate.dueDay = candidate.dueDate.getDate();
+      }
+    } else if (key === "scanSelect") candidate.selected = input.checked;
   });
 
   window.addEventListener("beforeinstallprompt", (event) => {

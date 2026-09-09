@@ -507,6 +507,75 @@ button:disabled {
   font-weight: 800;
 }
 
+.calendar-date-btn {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  color: inherit;
+  background: transparent;
+  font-size: inherit;
+  font-weight: inherit;
+}
+
+.calendar-date-btn:hover,
+.calendar-date-btn[aria-pressed="true"] {
+  color: var(--teal-dark);
+  background: #d6ede6;
+}
+
+.agenda-panel {
+  scroll-margin-top: 160px;
+}
+
+.agenda-filters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  border-bottom: 1px solid var(--line);
+  gap: 4px;
+}
+
+.agenda-filters button {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  min-height: 48px;
+  padding: 8px 2px;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.agenda-filters button[aria-pressed="true"] {
+  color: var(--teal-dark);
+  border-bottom-color: var(--teal);
+}
+
+.filter-count {
+  min-width: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.agenda-summary {
+  margin: 12px 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+#agendaMoreBtn {
+  margin-top: 12px;
+}
+
 .bill-pill {
   display: block;
   min-width: 0;
@@ -1830,8 +1899,12 @@ tbody tr:last-child td {
     padding: 6px;
   }
 
-  .calendar-day-number span:nth-child(2) {
+  .calendar-day-number > span {
     display: none;
+  }
+
+  .calendar-date-btn {
+    width: 100%;
   }
 
   .bill-pill {
