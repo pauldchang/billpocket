@@ -377,3 +377,140 @@ test("undoing a removal restores the bill and existing paid period exactly once"
   assert.equal(run('JSON.stringify(state.payments)'), history);
   assert.equal(run("Boolean(getPaidRecordForPeriod(state.bills[0], parseLocalDate('2026-09-05')))"), true);
 });
+
+test("a future schedule change keeps older unpaid periods and their amounts", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}];
+    markBillPaidForPeriod('water', '2026-08-05'); openBillModal('water');`);
+  elements.get('billDueDateInput').value = '2026-10-20';
+  elements.get('billAmountInput').value = '100';
+  run('saveBillFromForm()');
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2026, 8, 1)))"), '2026-09-05');
+  assert.equal(run('getMonthStatus().openTotal'), 75);
+  assert.equal(run('getOverdueBills().length'), 3);
+  assert.equal(run('getMonthStatus(new Date(2026, 7, 1)).paidTotal'), 75);
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2026, 9, 1)))"), '2026-10-20');
+  assert.equal(run('getForecast(2)[1].total'), 100);
+  run("markBillPaidForPeriod('water', '2026-07-05')");
+  assert.equal(run('state.payments.at(-1).amount'), 75);
+});
+
+test("moving a recurring due date does not reopen a paid month", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}];
+    markBillPaidForPeriod('water', '2026-09-05'); openBillModal('water');`);
+  elements.get('billDueDateInput').value = '2026-09-20';
+  run('saveBillFromForm()');
+  assert.equal(run('getMonthStatus().paidTotal'), 75);
+  assert.equal(run('getMonthStatus().openTotal'), 0);
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2026, 8, 1)))"), '2026-09-05');
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2026, 9, 1)))"), '2026-10-20');
+});
+
+test("February statements keep a recurring 31st and preserve the previous amount", () => {
+  const { run } = app('2027-02-10T12:00:00');
+  run(`globalThis.original = {id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:31, dueDate:'2027-01-31'};
+    globalThis.date = parseLocalDate('2027-02-28');
+    state.bills = [preserveBillSchedule(original, {...original, amount:80, ...getCapturedSchedule(original, date, 'monthly')}, date)];`);
+  assert.equal(run('state.bills[0].dueDay'), 31);
+  assert.equal(run('state.bills[0].dueDate'), '2027-01-31');
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2027, 2, 1)))"), '2027-03-31');
+  assert.equal(run('getMonthStatus(new Date(2027, 0, 1)).openTotal'), 75);
+  assert.equal(run('getMonthStatus(new Date(2027, 1, 1)).openTotal'), 80);
+});
+
+test("changing quarterly to annual keeps earlier quarters without creating extra dates", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'policy', name:'Policy', category:'insurance', amount:90, frequency:'quarterly', dueDay:20, dueDate:'2026-01-20'}]; openBillModal('policy');`);
+  assert.equal(elements.get('billDueDateInput').value, '2026-10-20');
+  elements.get('billDueDateInput').value = '2026-11-15';
+  elements.get('billFrequencyInput').value = 'annual';
+  elements.get('billAmountInput').value = '300';
+  run('saveBillFromForm()');
+  assert.equal(run('getOverdueBills().length'), 3);
+  assert.equal(run('getMonthStatus(new Date(2026, 9, 1)).total'), 90);
+  assert.equal(run('getMonthStatus(new Date(2026, 10, 1)).total'), 300);
+  assert.equal(run('getMonthStatus(new Date(2027, 0, 1)).total'), 0);
+  assert.equal(run('getMonthStatus(new Date(2027, 10, 1)).total'), 300);
+});
+
+test("repeated edits in the same month keep one history boundary and unchanged edits are inert", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}]; openBillModal('water');`);
+  elements.get('billDueDateInput').value = '2026-10-20';
+  run('saveBillFromForm(); openBillModal("water")');
+  elements.get('billDueDateInput').value = '2026-10-25';
+  elements.get('billAmountInput').value = '100';
+  run('saveBillFromForm()');
+  assert.equal(run('state.bills[0].scheduleHistory.length'), 1);
+  assert.equal(run('getMonthStatus().openTotal'), 75);
+  assert.equal(run("toDateInputValue(getBillDueDateForMonth(state.bills[0], new Date(2026, 9, 1)))"), '2026-10-25');
+  const before = run('JSON.stringify(state.bills[0])');
+  run('openBillModal("water"); saveBillFromForm()');
+  assert.equal(run('JSON.stringify(state.bills[0])'), before);
+});
+
+test("paid one-time dates cannot move until undone and the editor unlocks afterward", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'order', name:'Amazon', category:'purchase', amount:25, frequency:'one-time', dueDay:5, dueDate:'2026-09-05'}];
+    markBillPaidForPeriod('order', '2026-09-05'); openBillModal('order');`);
+  assert.equal(elements.get('billDueDateInput').disabled, true);
+  assert.equal(elements.get('billScheduleError').hidden, false);
+  const before = run('JSON.stringify(state)');
+  elements.get('billDueDateInput').value = '2026-10-05';
+  run('saveBillFromForm()');
+  assert.equal(run('JSON.stringify(state)'), before);
+  run("unmarkBillPaidForPeriod('order', '2026-09-05'); openBillModal('order')");
+  assert.equal(elements.get('billDueDateInput').disabled, false);
+  assert.equal(elements.get('billScheduleError').hidden, true);
+  elements.get('billDueDateInput').value = '2026-10-05';
+  run('saveBillFromForm()');
+  assert.equal(run('getMonthStatus().total'), 0);
+  assert.equal(run('getMonthStatus(new Date(2026, 9, 1)).total'), 25);
+});
+
+test("schedule history survives a backup and malformed or unsorted history is rejected", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}]; openBillModal('water');`);
+  elements.get('billDueDateInput').value = '2026-10-20';
+  run('saveBillFromForm(); globalThis.backup = JSON.parse(JSON.stringify(buildDataBackup()))');
+  assert.equal(run('getBackupState(backup) !== null'), true);
+  run('state = hydrateState(getBackupState(backup))');
+  assert.equal(run('getMonthStatus().openTotal'), 75);
+  for (const history of ['{}', '[null]', '[{beforeMonth:"2026-99"}]', '[{...backup.state.bills[0].scheduleHistory[0], amount:null}]', '[...backup.state.bills[0].scheduleHistory, ...backup.state.bills[0].scheduleHistory]']) {
+    assert.equal(run(`getBackupState({...state, bills:[{...state.bills[0], scheduleHistory:${history}}]})`), null);
+  }
+});
+
+test("frequency changes retain one-time and recurring history in overdue lookups", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'bill', name:'Bill', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}]; openBillModal('bill');`);
+  elements.get('billDueDateInput').value = '2026-10-05';
+  elements.get('billFrequencyInput').value = 'one-time';
+  run('saveBillFromForm()');
+  assert.equal(run('getOverdueBills().length'), 4);
+  assert.equal(run('getMonthStatus(new Date(2026, 10, 1)).total'), 0);
+  run('openBillModal("bill")');
+  elements.get('billDueDateInput').value = '2026-12-05';
+  elements.get('billFrequencyInput').value = 'monthly';
+  run('saveBillFromForm()');
+  assert.equal(run('getMonthStatus(new Date(2026, 9, 1)).total'), 75);
+  assert.equal(run('getMonthStatus(new Date(2026, 10, 1)).total'), 0);
+  assert.equal(run('getMonthStatus(new Date(2026, 11, 1)).total'), 75);
+  assert.equal(run('getOverdueBills().length'), 4);
+});
+
+test("old recurring payments do not lock a later unpaid one-time schedule", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'bill', name:'Bill', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-06-05'}];
+    markBillPaidForPeriod('bill', '2026-08-05'); openBillModal('bill');`);
+  elements.get('billDueDateInput').value = '2026-10-05';
+  elements.get('billFrequencyInput').value = 'one-time';
+  run('saveBillFromForm(); openBillModal("bill")');
+  assert.equal(elements.get('billDueDateInput').disabled, false);
+  elements.get('billDueDateInput').value = '2026-11-05';
+  run('saveBillFromForm()');
+  assert.equal(run('getMonthStatus(new Date(2026, 9, 1)).total'), 0);
+  assert.equal(run('getMonthStatus(new Date(2026, 10, 1)).total'), 75);
+  assert.equal(run('getMonthStatus(new Date(2026, 7, 1)).paidTotal'), 75);
+});

@@ -4,6 +4,10 @@ This prototype is a static PWA. Bill tracking, pasted-email capture, paid marks,
 
 Bills use a full `dueDate` as their recurrence anchor and retain `dueDay` for month-end clamping. Legacy monthly schedules and one-time month/year fields remain supported. Annual and quarterly bills recur from the chosen month. Editing an unchanged schedule preserves the original anchor and day.
 
+Recurring schedule and amount changes retain earlier versions in `scheduleHistory`, with ordered `beforeMonth` boundaries. Changes apply from the selected due-date month; earlier months keep their saved dates and amounts. A paid period retains its recorded date and amount even when that month's schedule changes. The app supports one occurrence per bill per month; separate installments need separate bills. Historical versions are preserved from this update onward, not reconstructed from data already lost in older versions.
+
+Email imports preserve a recurring month-end day when the statement matches the existing schedule (for example, a February 28 statement does not change a 31st-day schedule). A paid one-time bill's date and frequency stay locked until its manual paid mark is undone; imports cannot silently move that paid purchase into another month. The editor shows the latest schedule separately from historical paid dates.
+
 Run the dependency-free regression checks from the repository root with `node --test tests/billpocket.test.cjs`.
 
 Capture keeps sender and subject headers with their message, uses full dates and order IDs for receipt matching, and distinguishes a missing amount from an explicit zero. Review corrections remain in memory while navigating; raw pasted emails are cleared after import and are not stored in backups. Receipt matching without an order ID is limited to merchant, date, and amount. Recurring statements are imported in due-date order, and older statements cannot overwrite the latest captured amount.

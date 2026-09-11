@@ -504,6 +504,19 @@ function dayDiff(a, b) {
 }
 
 function getBillDueDateForMonth(bill, monthDate) {
+  const monthKey = toDateInputValue(startOfMonth(monthDate)).slice(0, 7);
+  const paid = state.payments.find((payment) => payment.billId === bill.id
+    && payment.status === "Paid" && payment.periodKey?.slice(0, 7) === monthKey);
+  if (paid) return parseLocalDate(paid.periodKey);
+  return getScheduledDueDateForMonth(getBillScheduleForMonth(bill, monthDate), monthDate);
+}
+
+function getBillScheduleForMonth(bill, monthDate) {
+  const monthKey = toDateInputValue(startOfMonth(monthDate)).slice(0, 7);
+  return bill.scheduleHistory?.find((schedule) => monthKey < schedule.beforeMonth) || bill;
+}
+
+function getScheduledDueDateForMonth(bill, monthDate) {
   const targetMonth = monthDate.getMonth();
   const targetYear = monthDate.getFullYear();
   const day = Math.min(Number(bill.dueDay), endOfMonth(monthDate).getDate());
@@ -531,6 +544,38 @@ function getBillDueDateForMonth(bill, monthDate) {
   }
 
   return new Date(targetYear, targetMonth, day);
+}
+
+function preserveBillSchedule(existing, updated, effectiveDate) {
+  if (!existing || existing.frequency === "one-time" && updated.frequency === "one-time") return updated;
+  const fields = ["dueDay", "dueDate", "frequency", "oneTimeMonth", "oneTimeYear", "amount"];
+  if (fields.every((field) => existing[field] === updated[field])) return updated;
+  const beforeMonth = toDateInputValue(effectiveDate).slice(0, 7);
+  const previous = getBillScheduleForMonth(existing, addMonths(effectiveDate, -1));
+  // Each boundary keeps the schedule used before that month; the latest stays on the bill.
+  updated.scheduleHistory = [
+    ...(existing.scheduleHistory || []).filter((schedule) => schedule.beforeMonth < beforeMonth),
+    { beforeMonth, ...Object.fromEntries(fields.map((field) => [field, previous[field]])) }
+  ];
+  const start = getBillTrackingStart(existing);
+  updated.trackingStartedOn = toDateInputValue(effectiveDate < start ? effectiveDate : start);
+  return updated;
+}
+
+function getCapturedSchedule(existing, dueDate, frequency) {
+  const scheduled = existing && existing.frequency === frequency ? getScheduledDueDateForMonth(existing, dueDate) : null;
+  const matches = scheduled && isSameDay(scheduled, dueDate);
+  return {
+    frequency,
+    dueDay: matches ? existing.dueDay : dueDate.getDate(),
+    dueDate: matches ? existing.dueDate : toDateInputValue(dueDate)
+  };
+}
+
+function isPaidOneTimeScheduleChange(existing, frequency, dueDate) {
+  return existing?.frequency === "one-time"
+    && (frequency !== "one-time" || !isSameDay(getOneTimeDueDate(existing), dueDate))
+    && Boolean(getPaidRecordForPeriod(existing, getOneTimeDueDate(existing)));
 }
 
 function getUpcomingBills(days = 45, options = {}) {
@@ -579,12 +624,6 @@ function getOverdueBills() {
   const results = [];
   state.bills.forEach((bill) => {
     const first = getBillTrackingStart(bill);
-    if (bill.frequency === "one-time") {
-      const dueDate = getOneTimeDueDate(bill);
-      const diff = dayDiff(today, dueDate);
-      if (diff < 0 && !getPaidRecordForPeriod(bill, dueDate)) results.push({ bill, dueDate, diff });
-      return;
-    }
     for (let month = startOfMonth(first); month <= today; month = addMonths(month, 1)) {
       const dueDate = getBillDueDateForMonth(bill, month);
       if (!dueDate || dueDate < first) continue;
@@ -596,7 +635,7 @@ function getOverdueBills() {
 }
 
 function getBillPeriodAmount(bill, dueDate) {
-  return Number(getPaidRecordForPeriod(bill, dueDate)?.amount ?? bill.amount);
+  return Number(getPaidRecordForPeriod(bill, dueDate)?.amount ?? getBillScheduleForMonth(bill, dueDate).amount ?? bill.amount);
 }
 
 function getBillsForMonth(monthDate) {
@@ -626,7 +665,7 @@ function getMonthStatus(monthDate = new Date()) {
   const open = bills.filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
   const total = bills.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   const paidTotal = paid.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
-  const openTotal = open.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
+  const openTotal = open.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   const afterBills = Number(state.settings.monthlyIncome || 0) - total;
 
   return {
@@ -703,7 +742,7 @@ function renderPocketOverview() {
     els.quickPayHeading.textContent = next.bill.name;
     els.quickPayMeta.textContent = `${dueText} - ${categoryLabels[next.bill.category] || "Other"} - ${providerLabels[next.bill.provider] || "Manual"}`;
     els.quickPayDate.textContent = formatDate(next.dueDate);
-    els.quickPayAmount.textContent = formatMoney(next.bill.amount);
+    els.quickPayAmount.textContent = formatMoney(getBillPeriodAmount(next.bill, next.dueDate));
     els.quickPayBtn.disabled = false;
     els.quickPayBtn.dataset.nextBill = next.bill.id;
     els.quickPayBtn.dataset.nextDueDate = toDateInputValue(next.dueDate);
@@ -770,7 +809,7 @@ function renderMetrics() {
     },
     {
       label: "Due soon",
-      value: formatMoney(dueSoon.reduce((sum, item) => sum + Number(item.bill.amount), 0)),
+      value: formatMoney(dueSoon.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0)),
       meta: `${dueSoon.length} late or due in 7 days`
     },
     {
@@ -1034,6 +1073,17 @@ function getNextDueDate(bill) {
   return getBillDueDateForMonth(bill, today) || today;
 }
 
+function getScheduleEditDate(bill) {
+  if (bill.frequency === "one-time") return getOneTimeDueDate(bill);
+  const today = new Date();
+  if (bill.dueDate && dayDiff(today, parseLocalDate(bill.dueDate)) > 0) return parseLocalDate(bill.dueDate);
+  for (let offset = 0; offset < 13; offset += 1) {
+    const dueDate = getScheduledDueDateForMonth(bill, addMonths(today, offset));
+    if (dueDate) return dueDate;
+  }
+  return today;
+}
+
 function getPeriodKey(date) {
   return toDateInputValue(date);
 }
@@ -1249,7 +1299,7 @@ function renderEmailScan() {
       <article class="scan-card ${match.status}" data-scan-card="${candidate.id}">
         <div class="scan-card-head">
           <label class="check-row scan-check">
-            <input type="checkbox" data-scan-select="${candidate.id}" ${(candidate.selected ?? match.status !== "older-statement") ? "checked" : ""}>
+            <input type="checkbox" data-scan-select="${candidate.id}" ${(candidate.selected ?? !["older-statement", "paid-date"].includes(match.status)) ? "checked" : ""}>
             <span>Import</span>
           </label>
           <div class="scan-badges">
@@ -1356,6 +1406,9 @@ function findMatchingCapturedBill(candidate) {
 function getCandidateMatch(candidate) {
   const exact = findMatchingCapturedBill(candidate);
   if (exact) {
+    if (candidate.dateFound && isPaidOneTimeScheduleChange(exact, candidate.frequency, candidate.dueDate)) {
+      return { status: "paid-date", label: "Paid purchase - original date kept", tagClass: "manual", bill: exact };
+    }
     if (isOlderStatement(exact, candidate)) {
       return { status: "older-statement", label: "Older statement - current bill kept", tagClass: "manual", bill: exact };
     }
@@ -2130,6 +2183,7 @@ function importScannedBills() {
   let imported = 0;
   let learned = 0;
   let skipped = 0;
+  let paidDateSkipped = 0;
   selected.sort((a, b) => document.querySelector(`[data-scan-due-date="${a.id}"]`).value
     .localeCompare(document.querySelector(`[data-scan-due-date="${b.id}"]`).value));
   selected.forEach((candidate) => {
@@ -2148,6 +2202,10 @@ function importScannedBills() {
       skipped += 1;
       return;
     }
+    if (isPaidOneTimeScheduleChange(existing, frequency, dueDate)) {
+      paidDateSkipped += 1;
+      return;
+    }
 
     const bill = {
       ...existing,
@@ -2156,10 +2214,7 @@ function importScannedBills() {
       category,
       amount,
       lastStatementDate: dueDateValue,
-      dueDay,
-      dueDate: existing?.dueDate && existing.frequency === frequency
-        && getBillDueDateForMonth(existing, dueDate) ? existing.dueDate : dueDateValue,
-      frequency,
+      ...getCapturedSchedule(existing, dueDate, frequency),
       provider: existing?.provider || "manual",
       autopay: existing?.autopay ?? false,
       notes: existing?.notes || `Imported from bill capture. ${candidate.source}`
@@ -2173,7 +2228,7 @@ function importScannedBills() {
     }
 
     if (existing) {
-      Object.assign(existing, bill);
+      Object.assign(existing, preserveBillSchedule(existing, bill, dueDate));
     } else {
       state.bills.push(bill);
     }
@@ -2196,7 +2251,8 @@ function importScannedBills() {
       found: emailScanCandidates.length,
       imported,
       learned,
-      skipped
+      skipped,
+      paidDateSkipped
     }
   ].slice(-20);
   emailScanCandidates = [];
@@ -2206,7 +2262,7 @@ function importScannedBills() {
   saveState();
   render();
   showView("bills");
-  showToast(`${imported} bill${imported === 1 ? "" : "s"} imported.${skipped ? ` ${skipped} older statement${skipped === 1 ? "" : "s"} skipped.` : ""}`);
+  showToast(`${imported} bill${imported === 1 ? "" : "s"} imported.${skipped ? ` ${skipped} older statement${skipped === 1 ? "" : "s"} skipped.` : ""}${paidDateSkipped ? ` ${paidDateSkipped} paid purchase date change${paidDateSkipped === 1 ? "" : "s"} skipped.` : ""}`);
 }
 
 function clearEmailScan() {
@@ -2299,11 +2355,16 @@ function openBillModal(billId = null) {
   document.getElementById("billNameInput").value = bill?.name || "";
   document.getElementById("billCategoryInput").value = bill?.category || "utilities";
   document.getElementById("billAmountInput").value = bill?.amount ?? "";
-  document.getElementById("billDueDateInput").value = toDateInputValue(bill ? getNextDueDate(bill) : new Date());
+  document.getElementById("billDueDateInput").value = toDateInputValue(bill ? getScheduleEditDate(bill) : new Date());
   document.getElementById("billFrequencyInput").value = bill?.frequency || "monthly";
   document.getElementById("billProviderInput").value = bill?.provider || "manual";
   document.getElementById("billAutopayInput").checked = Boolean(bill?.autopay);
   document.getElementById("billNotesInput").value = bill?.notes || "";
+  const paidOneTime = bill?.frequency === "one-time"
+    && Boolean(getPaidRecordForPeriod(bill, getOneTimeDueDate(bill)));
+  document.getElementById("billDueDateInput").disabled = Boolean(paidOneTime);
+  document.getElementById("billFrequencyInput").disabled = Boolean(paidOneTime);
+  document.getElementById("billScheduleError").hidden = !paidOneTime;
   modal.showModal();
 }
 
@@ -2327,10 +2388,11 @@ function openPayModal(billId, dueDateValue) {
   document.getElementById("payModalTitle").textContent = `Demo: ${bill.name}`;
   document.getElementById("payBillIdInput").value = bill.id;
   document.getElementById("payDueDateInput").value = toDateInputValue(dueDate);
-  document.getElementById("paymentAmountInput").value = Number(bill.amount).toFixed(2);
+  const amount = getBillPeriodAmount(bill, dueDate);
+  document.getElementById("paymentAmountInput").value = amount.toFixed(2);
   document.getElementById("paymentDateInput").value = toDateInputValue(new Date());
   document.getElementById("paymentSummary").innerHTML = `
-    <strong>${escapeHtml(bill.name)} - ${formatMoney(bill.amount)}</strong>
+    <strong>${escapeHtml(bill.name)} - ${formatMoney(amount)}</strong>
     <span>Due ${formatDate(dueDate)} - ${categoryLabels[bill.category] || "Other"} - ${providerLabels[bill.provider] || "Manual"}</span>
   `;
   document.getElementById("paymentAccountInput").innerHTML = state.accounts.map((account) => `
@@ -2368,8 +2430,12 @@ function saveBillFromForm() {
   const dueDateValue = document.getElementById("billDueDateInput").value;
   const dueDate = parseLocalDate(dueDateValue);
   const frequency = document.getElementById("billFrequencyInput").value;
+  if (isPaidOneTimeScheduleChange(existing, frequency, dueDate)) {
+    document.getElementById("billScheduleError").hidden = false;
+    return;
+  }
   const scheduleUnchanged = existing && existing.frequency === frequency
-    && toDateInputValue(getNextDueDate(existing)) === dueDateValue;
+    && toDateInputValue(getScheduleEditDate(existing)) === dueDateValue;
   const bill = {
     ...existing,
     id,
@@ -2390,7 +2456,7 @@ function saveBillFromForm() {
   }
 
   if (existingIndex >= 0) {
-    state.bills[existingIndex] = bill;
+    state.bills[existingIndex] = preserveBillSchedule(existing, bill, dueDate);
   } else {
     state.bills.push(bill);
   }
@@ -2453,7 +2519,7 @@ function markBillPaidForPeriod(billId, dueDateValue) {
     date: toDateInputValue(new Date()),
     billId: bill.id,
     billName: bill.name,
-    amount: Number(bill.amount),
+    amount: getBillPeriodAmount(bill, dueDate),
     source: "Marked paid",
     method: "Manual",
     status: "Paid",
@@ -2706,18 +2772,24 @@ function getBackupState(payload) {
   const validId = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
   const uniqueItems = (items) => Array.isArray(items) && items.every((item) => isRecord(item) && validId(item.id))
     && new Set(items.map((item) => item.id)).size === items.length;
+  const validSchedule = (bill) => isRecord(bill) && validNumber(bill.amount)
+    && validNumber(bill.dueDay) && Number.isInteger(Number(bill.dueDay)) && bill.dueDay >= 1 && bill.dueDay <= 31
+    && ["monthly", "quarterly", "annual", "one-time"].includes(bill.frequency) && optionalDate(bill.dueDate)
+    && (bill.oneTimeMonth === undefined || Number.isInteger(bill.oneTimeMonth) && bill.oneTimeMonth >= 0 && bill.oneTimeMonth <= 11)
+    && (bill.oneTimeYear === undefined || Number.isInteger(bill.oneTimeYear) && bill.oneTimeYear >= 1000 && bill.oneTimeYear <= 9999);
   for (const key of ["bills", "payments", "services", "accounts", "snapshots", "emailScanHistory", "captureSources", "activity"]) {
     if (source[key] !== undefined && !uniqueItems(source[key])) return null;
   }
   if (!source.bills.every((bill) => typeof bill.name === "string" && bill.name.trim()
-    && validNumber(bill.amount) && Number.isInteger(Number(bill.dueDay)) && bill.dueDay >= 1 && bill.dueDay <= 31
+    && validSchedule(bill)
     && Object.hasOwn(categoryLabels, bill.category)
-    && ["monthly", "quarterly", "annual", "one-time"].includes(bill.frequency)
-    && optionalDate(bill.dueDate) && optionalDate(bill.trackingStartedOn) && optionalDate(bill.lastStatementDate)
+    && optionalDate(bill.trackingStartedOn) && optionalDate(bill.lastStatementDate)
     && [bill.notes, bill.provider, bill.orderId].every(optionalText)
     && (bill.autopay === undefined || typeof bill.autopay === "boolean")
-    && (bill.oneTimeMonth === undefined || Number.isInteger(bill.oneTimeMonth) && bill.oneTimeMonth >= 0 && bill.oneTimeMonth <= 11)
-    && (bill.oneTimeYear === undefined || Number.isInteger(bill.oneTimeYear) && bill.oneTimeYear >= 1000 && bill.oneTimeYear <= 9999))) return null;
+    && (bill.scheduleHistory === undefined || Array.isArray(bill.scheduleHistory)
+      && bill.scheduleHistory.every((schedule, index, history) => validSchedule(schedule)
+        && typeof schedule.beforeMonth === "string" && validDate(`${schedule.beforeMonth}-01`)
+        && (index === 0 || history[index - 1].beforeMonth < schedule.beforeMonth))))) return null;
   if (!source.payments.every((payment) => validDate(payment.date) && validNumber(payment.amount)
     && optionalDate(payment.periodKey)
     && [payment.billName, payment.source, payment.method, payment.reference, payment.status].every(optionalText)
@@ -2731,7 +2803,7 @@ function getBackupState(payload) {
     || ![item.months, item.total, item.average].every(validNumber) || !Number.isInteger(Number(item.months)) || item.months < 1)) return null;
   if (source.activity?.some((item) => !validTimestamp(item.at) || ![item.title, item.detail].every(optionalText))) return null;
   if (source.emailScanHistory?.some((item) => !validTimestamp(item.at)
-    || [item.found, item.imported, item.learned, item.skipped].some((value) => value !== undefined && !validNumber(value)))) return null;
+    || [item.found, item.imported, item.learned, item.skipped, item.paidDateSkipped].some((value) => value !== undefined && !validNumber(value)))) return null;
   if (source.captureRules !== undefined && (!isRecord(source.captureRules)
     || Object.values(source.captureRules).some((rule) => !isRecord(rule)
       || ![rule.billerName, rule.preferredAmountType, rule.preferredCategory, rule.preferredFrequency].every(optionalText)
