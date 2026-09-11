@@ -1,4 +1,4 @@
-const CACHE_NAME = "billpocket-v15";
+const CACHE_NAME = "billpocket-v16";
 const APP_SHELL = [
   "./",
   "./index.html",

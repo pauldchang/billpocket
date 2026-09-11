@@ -78,7 +78,14 @@
           </div>
         </header>
 
-        <p class="storage-notice" id="storageNotice" role="alert" hidden></p>
+        <div class="storage-notice" id="storageNotice" role="alert" hidden>
+          <p id="storageNoticeMessage"></p>
+          <div class="storage-actions">
+            <button class="secondary-btn" type="button" id="storageBackupBtn">Download backup</button>
+            <button class="secondary-btn" type="button" id="loadLatestDataBtn" hidden>Load latest</button>
+            <button class="secondary-btn" type="button" id="retrySaveBtn" hidden>Retry save</button>
+          </div>
+        </div>
         <div class="update-notice" id="updateNotice" role="status" hidden>
           <span>An update is ready.</span>
           <button class="secondary-btn small" type="button" id="refreshAppBtn">Refresh app</button>

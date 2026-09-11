@@ -12,6 +12,10 @@ The dashboard provides Upcoming, Overdue, and Paid filters with pagination. Upco
 
 Paid-period totals use the recorded payment amount even after the bill's current amount changes. Payment history supports search, recorded-month and status filters, and responsive phone rows with the bill's due date. CSV exports respect the active history filters and escape formula-like text. Backups still contain the complete local state regardless of those filters.
 
+Before saving or restoring, the app compares the device's saved data with the copy loaded by this tab. A changed copy pauses writes and offers a backup download or an explicit reload, without replacing unfinished forms automatically. Storage events and returning to a tab also check for changes. Failed saves keep the in-memory records available for backup and offer Retry save; closing a tab with unsaved records triggers a browser warning. This is same-browser stale-tab protection, not cross-device sync or a transactional database.
+
+Backup downloads do not modify the saved state. Restore validates record containers, numeric values, and the exact timestamp fields used by each view before replacing data. Unfinished forms and raw pasted emails are not included in backups. Removing a bill keeps its payment log and offers a temporary Undo action that restores the original bill and its paid-period links.
+
 Real money movement needs a backend and regulated providers. A production build should use tokenized bank access, never store raw credentials, and route payments through approved rails.
 
 ## Suggested Production Services

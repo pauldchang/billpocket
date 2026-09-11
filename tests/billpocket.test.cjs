@@ -5,22 +5,21 @@ const vm = require("node:vm");
 const path = require("node:path");
 
 const source = fs.readFileSync(path.join(__dirname, "../outputs/bill-calendar-pwa/app.js"), "utf8").replace(/\ninit\(\);\s*$/, "");
-function app(now = "2026-09-08T12:00:00") {
+function app(now = "2026-09-08T12:00:00", storage = new Map()) {
   const elements = new Map();
-  const storage = new Map();
   class Clock extends Date {
     constructor(...args) { super(...(args.length ? args : [now])); }
     static now() { return new Date(now).getTime(); }
   }
   const context = vm.createContext({
     Date: Clock, Intl, structuredClone, console,
-    localStorage: { getItem: (key) => storage.get(key), setItem: (key, value) => storage.set(key, value) },
+    localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     document: { getElementById: (id) => {
       if (!elements.has(id)) elements.set(id, { value: "", checked: false, reportValidity: () => true,
         classList: { add() {}, remove() {}, toggle() {} }, close() {}, showModal() {} });
       return elements.get(id);
     } },
-    window: { setTimeout() {}, clearTimeout() {} }
+    window: { setTimeout() {}, clearTimeout() {}, confirm: () => true }
   });
   vm.runInContext(source, context);
   const run = (code) => vm.runInContext(code, context);
@@ -260,4 +259,121 @@ test("legacy month-end one-time dates agree with the calendar", () => {
   const { run } = app();
   run(`globalThis.bill = {frequency:'one-time', dueDay:31, oneTimeMonth:1, oneTimeYear:2026}`);
   assert.equal(run('toDateInputValue(getNextDueDate(bill))'), '2026-02-28');
+});
+
+test("a stale tab cannot overwrite a newer payment and can back up its own edits", () => {
+  const shared = new Map();
+  const first = app(undefined, shared);
+  first.run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-09-05'}]; saveState();`);
+  const second = app(undefined, shared);
+  second.run('state = loadState()');
+  first.run("markBillPaidForPeriod('water', '2026-09-05')");
+  const latest = shared.get('billflow-pwa-state-v1');
+  second.run('state.bills[0].amount = 100');
+  assert.equal(second.run('saveState()'), false);
+  assert.equal(shared.get('billflow-pwa-state-v1'), latest);
+  assert.equal(JSON.parse(latest).payments.length, 1);
+  assert.equal(second.run('buildDataBackup().state.bills[0].amount'), 100);
+  assert.equal(second.run('unsavedChanges'), true);
+  assert.equal(second.elements.get('loadLatestDataBtn').hidden, false);
+  assert.equal(second.elements.get('retrySaveBtn').hidden, true);
+});
+
+test("storage checks ignore own saves but catch removed storage", () => {
+  const { run, storage } = app();
+  run('saveState(); checkForStorageChanges()');
+  assert.equal(run('storageConflict'), false);
+  storage.set('unrelated-key', 'changed');
+  run('checkForStorageChanges()');
+  assert.equal(run('storageConflict'), false);
+  storage.delete('billflow-pwa-state-v1');
+  run('checkForStorageChanges()');
+  assert.equal(run('storageConflict'), true);
+  assert.equal(run('saveState()'), false);
+  assert.equal(storage.has('billflow-pwa-state-v1'), false);
+});
+
+test("failed saves can be retried without losing the in-memory changes", () => {
+  const { run, elements } = app();
+  run(`saveState(); globalThis.write = localStorage.setItem;
+    localStorage.setItem = () => { throw new Error('Quota exceeded'); };
+    state.settings.monthlyIncome = 6000;`);
+  assert.equal(run('saveState()'), false);
+  assert.equal(run('unsavedChanges'), true);
+  assert.equal(elements.get('retrySaveBtn').hidden, false);
+  run('localStorage.setItem = write');
+  assert.equal(run('saveState()'), true);
+  assert.equal(run('unsavedChanges'), false);
+  assert.equal(elements.get('storageNotice').hidden, true);
+  assert.equal(run('JSON.parse(localStorage.getItem(STORAGE_KEY)).settings.monthlyIncome'), 6000);
+});
+
+test("backup download does not change saved data or the activity log", () => {
+  const { run } = app();
+  run('saveState(); exportJson = (filename, payload) => { globalThis.downloaded = structuredClone(payload); }');
+  const stored = run('localStorage.getItem(STORAGE_KEY)');
+  const activity = run('JSON.stringify(state.activity)');
+  run('exportDataBackup()');
+  assert.equal(run('localStorage.getItem(STORAGE_KEY)'), stored);
+  assert.equal(run('JSON.stringify(state.activity)'), activity);
+  assert.equal(run('downloaded.app'), 'BillPocket');
+});
+
+test("restore rejects malformed timestamps, coerced amounts, and invalid containers", () => {
+  const { run } = app();
+  for (const value of ['null', 'false', '[]', '""', '" "']) {
+    assert.equal(run(`getBackupState({bills:[], payments:[{id:'payment', date:'2026-09-05', amount:${value}}]})`), null);
+  }
+  for (const snapshot of [
+    "{id:'snapshot', at:'2026-09-05T12:00:00', months:6, total:100, average:20}",
+    "{id:'snapshot', createdAt:'2026-02-30T12:00:00', months:6, total:100, average:20}",
+    "{id:'snapshot', createdAt:null, months:6, total:100, average:20}"
+  ]) assert.equal(run(`getBackupState({bills:[], payments:[], snapshots:[${snapshot}]})`), null);
+  for (const extra of ['settings:null', 'captureRules:[]', 'captureRules:{water:null}', 'activity:[{id:"a", createdAt:"2026-09-05T12:00:00"}]']) {
+    assert.equal(run(`getBackupState({bills:[], payments:[], ${extra}})`), null);
+  }
+  assert.equal(run('getBackupState({app:"BillPocket", version:0, state})'), null);
+  assert.equal(run('getBackupState({bills:[], payments:[{id:"p", date:"2026-09-05", amount:75, manualMark:true}]})'), null);
+  assert.equal(run('getBackupState({bills:[], payments:[{id:"p", date:"2026-09-05", amount:"75.00"}]}) !== null'), true);
+  assert.equal(run('getBackupState(buildDataBackup()) !== null'), true);
+});
+
+test("a failed backup restore keeps both current data and the saved copy", async () => {
+  const { run } = app();
+  run(`saveState(); globalThis.backup = buildDataBackup(); backup = structuredClone(backup);
+    backup.state.settings.monthlyIncome = 9000;
+    localStorage.setItem = () => { throw new Error('Quota exceeded'); };`);
+  const before = run('JSON.stringify(state)');
+  const stored = run('localStorage.getItem(STORAGE_KEY)');
+  await run('importDataBackup([{text:async () => JSON.stringify(backup)}])');
+  assert.equal(run('JSON.stringify(state)'), before);
+  assert.equal(run('localStorage.getItem(STORAGE_KEY)'), stored);
+});
+
+test("backup restore cannot bypass stale-tab protection", async () => {
+  const { run } = app();
+  run(`saveState(); globalThis.before = JSON.stringify(state);
+    globalThis.latest = structuredClone(state); latest.settings.monthlyIncome = 7000;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(latest));`);
+  await run('importDataBackup([{text:async () => JSON.stringify(buildDataBackup())}])');
+  assert.equal(run('JSON.stringify(state) === before'), true);
+  assert.equal(run('JSON.parse(localStorage.getItem(STORAGE_KEY)).settings.monthlyIncome'), 7000);
+  assert.equal(run('storageConflict'), true);
+});
+
+test("undoing a removal restores the bill and existing paid period exactly once", () => {
+  const { run, elements } = app();
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:5, dueDate:'2026-09-05', notes:'Keep this note', lastStatementDate:'2026-09-05'}];
+    markBillPaidForPeriod('water', '2026-09-05');`);
+  const bill = run('JSON.stringify(state.bills[0])');
+  const history = run('JSON.stringify(state.payments)');
+  run("deleteBill('water')");
+  assert.equal(run('state.bills.length'), 0);
+  assert.equal(run('JSON.stringify(state.payments)'), history);
+  const undo = elements.get('toastUndoBtn').onclick;
+  undo(); undo();
+  assert.equal(run('state.bills.length'), 1);
+  assert.equal(run('JSON.stringify(state.bills[0])'), bill);
+  assert.equal(run('JSON.stringify(state.payments)'), history);
+  assert.equal(run("Boolean(getPaidRecordForPeriod(state.bills[0], parseLocalDate('2026-09-05')))"), true);
 });

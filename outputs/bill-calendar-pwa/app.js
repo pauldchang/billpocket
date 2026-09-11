@@ -279,6 +279,9 @@ const seedState = {
 let storageError = "";
 let unreadableStorage = false;
 let needsStateSave = false;
+let lastSavedState = null;
+let storageConflict = false;
+let unsavedChanges = false;
 let state = loadState();
 let displayDate = startOfMonth(new Date());
 let deferredInstallPrompt = null;
@@ -343,6 +346,7 @@ const payForm = document.getElementById("payForm");
 function loadState() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
+    lastSavedState = stored;
     if (!stored) {
       return hydrateState(seedState);
     }
@@ -392,14 +396,12 @@ function mergeById(savedItems = [], defaultItems = []) {
 }
 
 function saveState() {
+  unsavedChanges = true;
   try {
     if (unreadableStorage) throw new Error("Unreadable saved data");
     state.bills = state.bills.map((bill) => bill.trackingStartedOn ? bill
       : { ...bill, trackingStartedOn: toDateInputValue(getBillTrackingStart(bill)) });
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-    storageError = "";
-    renderStorageNotice();
-    return true;
+    return persistState(state);
   } catch {
     storageError ||= "Changes could not be saved on this device. Keep this page open and download a backup from History.";
     renderStorageNotice();
@@ -407,10 +409,47 @@ function saveState() {
   }
 }
 
+function storageMatchesLoadedState() {
+  if (localStorage.getItem(STORAGE_KEY) === lastSavedState && !storageConflict) return true;
+  storageConflict = true;
+  storageError = "Data changed in another tab. Saving here is paused to protect those changes. A backup contains this tab's bill records, but not unfinished forms or pasted emails.";
+  renderStorageNotice();
+  return false;
+}
+
+function persistState(nextState) {
+  if (!storageMatchesLoadedState()) return false;
+  const serialized = JSON.stringify(nextState);
+  localStorage.setItem(STORAGE_KEY, serialized);
+  lastSavedState = serialized;
+  storageError = "";
+  unsavedChanges = false;
+  renderStorageNotice();
+  return true;
+}
+
+function checkForStorageChanges() {
+  try {
+    storageMatchesLoadedState();
+  } catch {
+    storageError ||= "Saved data is unavailable on this device. Keep this page open and download a backup before closing it.";
+    renderStorageNotice();
+  }
+}
+
+function loadLatestData() {
+  if (!window.confirm("Load the latest saved data? Unsaved changes, unfinished forms, and pasted emails in this tab will be discarded.")) return;
+  unsavedChanges = false;
+  window.location.reload();
+}
+
 function renderStorageNotice() {
   const notice = document.getElementById("storageNotice");
   notice.hidden = !storageError;
-  notice.textContent = storageError;
+  document.getElementById("storageNoticeMessage").textContent = storageError;
+  document.getElementById("loadLatestDataBtn").hidden = !storageConflict;
+  document.getElementById("retrySaveBtn").hidden = storageConflict || unreadableStorage;
+  document.getElementById("storageBackupBtn").hidden = unreadableStorage;
 }
 
 function formatMoney(value) {
@@ -2370,11 +2409,21 @@ function deleteBill(billId) {
   const ok = window.confirm(`Remove ${bill.name} from your bill list? Payment history will stay in the log.`);
   if (!ok) return;
 
+  const originalIndex = state.bills.findIndex((item) => item.id === billId);
   state.bills = state.bills.filter((item) => item.id !== billId);
   addActivity("Bill removed", `${bill.name} removed from bill list`);
   saveState();
   render();
-  showToast(`${bill.name} removed.`);
+  showToast(`${bill.name} removed.`, () => restoreRemovedBill(bill, originalIndex));
+}
+
+function restoreRemovedBill(bill, originalIndex) {
+  if (state.bills.some((item) => item.id === bill.id)) return;
+  state.bills.splice(Math.min(originalIndex, state.bills.length), 0, bill);
+  addActivity("Bill restored", `${bill.name} restored to bill list`);
+  saveState();
+  render();
+  showToast(`${bill.name} restored.`);
 }
 
 function resolveActionDueDate(bill, dueDateValue) {
@@ -2633,25 +2682,29 @@ function buildDataBackup() {
 }
 
 function exportDataBackup() {
-  addActivity("Backup exported", "Local BillPocket data downloaded");
-  saveState();
   exportJson(`billpocket-backup-${toDateInputValue(new Date())}.json`, buildDataBackup());
   renderDataBackupStatus();
-  showToast("Backup file downloaded.");
+  if (!storageError) showToast("Backup file downloaded.");
 }
 
 function getBackupState(payload) {
-  if (!payload || typeof payload !== "object") return null;
-  if (payload.app && payload.app !== "BillPocket") return null;
-  if (payload.version && payload.version !== 1) return null;
-  const source = payload.state || payload.data || payload;
-  if (!source || typeof source !== "object") return null;
+  const isRecord = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+  if (!isRecord(payload)) return null;
+  if (payload.app !== undefined && payload.app !== "BillPocket") return null;
+  if (payload.version !== undefined && payload.version !== 1) return null;
+  const source = Object.hasOwn(payload, "state") ? payload.state : Object.hasOwn(payload, "data") ? payload.data : payload;
+  if (!isRecord(source)) return null;
   if (!Array.isArray(source.bills) || !Array.isArray(source.payments)) return null;
   const validDate = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}$/.test(value)
     && !Number.isNaN(parseLocalDate(value).getTime()) && toDateInputValue(parseLocalDate(value)) === value;
-  const validNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0;
+  const validNumber = (value) => (typeof value === "number" || typeof value === "string" && value.trim() !== "")
+    && Number.isFinite(Number(value)) && Number(value) >= 0;
+  const optionalDate = (value) => value === undefined || value === null || value === "" || validDate(value);
+  const validTimestamp = (value) => typeof value === "string" && /^\d{4}-\d{2}-\d{2}T/.test(value)
+    && validDate(value.slice(0, 10)) && !Number.isNaN(new Date(value).getTime());
+  const optionalText = (value) => value === undefined || value === null || typeof value === "string";
   const validId = (value) => typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
-  const uniqueItems = (items) => Array.isArray(items) && items.every((item) => item && validId(item.id))
+  const uniqueItems = (items) => Array.isArray(items) && items.every((item) => isRecord(item) && validId(item.id))
     && new Set(items.map((item) => item.id)).size === items.length;
   for (const key of ["bills", "payments", "services", "accounts", "snapshots", "emailScanHistory", "captureSources", "activity"]) {
     if (source[key] !== undefined && !uniqueItems(source[key])) return null;
@@ -2660,18 +2713,31 @@ function getBackupState(payload) {
     && validNumber(bill.amount) && Number.isInteger(Number(bill.dueDay)) && bill.dueDay >= 1 && bill.dueDay <= 31
     && Object.hasOwn(categoryLabels, bill.category)
     && ["monthly", "quarterly", "annual", "one-time"].includes(bill.frequency)
-    && (!bill.dueDate || validDate(bill.dueDate))
-    && (!bill.trackingStartedOn || validDate(bill.trackingStartedOn))
-    && (!bill.lastStatementDate || validDate(bill.lastStatementDate))
+    && optionalDate(bill.dueDate) && optionalDate(bill.trackingStartedOn) && optionalDate(bill.lastStatementDate)
+    && [bill.notes, bill.provider, bill.orderId].every(optionalText)
+    && (bill.autopay === undefined || typeof bill.autopay === "boolean")
     && (bill.oneTimeMonth === undefined || Number.isInteger(bill.oneTimeMonth) && bill.oneTimeMonth >= 0 && bill.oneTimeMonth <= 11)
     && (bill.oneTimeYear === undefined || Number.isInteger(bill.oneTimeYear) && bill.oneTimeYear >= 1000 && bill.oneTimeYear <= 9999))) return null;
   if (!source.payments.every((payment) => validDate(payment.date) && validNumber(payment.amount)
-    && (!payment.periodKey || validDate(payment.periodKey)))) return null;
-  for (const key of ["snapshots", "activity", "emailScanHistory"]) {
-    if (source[key]?.some((item) => Number.isNaN(new Date(item.createdAt || item.at).getTime()))) return null;
-  }
-  if (source.settings && (!validNumber(source.settings.monthlyIncome) || !validNumber(source.settings.reserveTarget))) return null;
-  if (source.snapshots?.some((item) => ![item.months, item.total, item.average].every(validNumber))) return null;
+    && optionalDate(payment.periodKey)
+    && [payment.billName, payment.source, payment.method, payment.reference, payment.status].every(optionalText)
+    && (payment.billId === undefined || validId(payment.billId))
+    && (payment.manualMark === undefined || typeof payment.manualMark === "boolean")
+    && (!payment.manualMark || validId(payment.billId) && validDate(payment.periodKey) && payment.status === "Paid"))) return null;
+  if (source.settings !== undefined && (!isRecord(source.settings)
+    || !validNumber(source.settings.monthlyIncome) || !validNumber(source.settings.reserveTarget)
+    || source.settings.includeAutopay !== undefined && typeof source.settings.includeAutopay !== "boolean")) return null;
+  if (source.snapshots?.some((item) => !validTimestamp(item.createdAt)
+    || ![item.months, item.total, item.average].every(validNumber) || !Number.isInteger(Number(item.months)) || item.months < 1)) return null;
+  if (source.activity?.some((item) => !validTimestamp(item.at) || ![item.title, item.detail].every(optionalText))) return null;
+  if (source.emailScanHistory?.some((item) => !validTimestamp(item.at)
+    || [item.found, item.imported, item.learned, item.skipped].some((value) => value !== undefined && !validNumber(value)))) return null;
+  if (source.captureRules !== undefined && (!isRecord(source.captureRules)
+    || Object.values(source.captureRules).some((rule) => !isRecord(rule)
+      || ![rule.billerName, rule.preferredAmountType, rule.preferredCategory, rule.preferredFrequency].every(optionalText)
+      || rule.lastAmount !== undefined && !validNumber(rule.lastAmount)
+      || rule.lastDueDay !== undefined && (!validNumber(rule.lastDueDay) || !Number.isInteger(Number(rule.lastDueDay)) || rule.lastDueDay < 1 || rule.lastDueDay > 31)
+      || rule.lastLearnedAt !== undefined && !validTimestamp(rule.lastLearnedAt)))) return null;
   return source;
 }
 
@@ -2692,7 +2758,7 @@ async function importDataBackup(files) {
 
     const restoredState = hydrateState(backupState);
     // Commit the validated backup before replacing the working state.
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(restoredState));
+    if (!persistState(restoredState)) return;
     state = restoredState;
     unreadableStorage = false;
     storageError = "";
@@ -2706,6 +2772,21 @@ async function importDataBackup(files) {
 }
 
 function bindEvents() {
+  window.addEventListener("storage", (event) => {
+    if (event.storageArea === localStorage && (event.key === STORAGE_KEY || event.key === null)) checkForStorageChanges();
+  });
+  window.addEventListener("focus", checkForStorageChanges);
+  window.addEventListener("pageshow", checkForStorageChanges);
+  window.addEventListener("beforeunload", (event) => {
+    if (!unsavedChanges) return;
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  document.getElementById("loadLatestDataBtn").addEventListener("click", loadLatestData);
+  document.getElementById("storageBackupBtn").addEventListener("click", exportDataBackup);
+  document.getElementById("retrySaveBtn").addEventListener("click", () => {
+    if (saveState()) showToast("Changes saved on this device.");
+  });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => showView(button.dataset.view));
   });
