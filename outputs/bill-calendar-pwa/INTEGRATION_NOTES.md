@@ -6,9 +6,11 @@ Bills use a full `dueDate` as their recurrence anchor and retain `dueDay` for mo
 
 Run the dependency-free regression checks from the repository root with `node --test tests/billpocket.test.cjs`.
 
-Capture keeps sender and subject headers with their message, uses full dates and order IDs for receipt matching, and distinguishes a missing amount from an explicit zero. Review corrections remain in memory while navigating; raw pasted emails are cleared after import and are not stored in backups. Receipt matching without an order ID is limited to merchant, date, and amount.
+Capture keeps sender and subject headers with their message, uses full dates and order IDs for receipt matching, and distinguishes a missing amount from an explicit zero. Review corrections remain in memory while navigating; raw pasted emails are cleared after import and are not stored in backups. Receipt matching without an order ID is limited to merchant, date, and amount. Recurring statements are imported in due-date order, and older statements cannot overwrite the latest captured amount.
 
-The dashboard provides Upcoming, Overdue, and Paid filters for the 45-day lookback/lookahead range, with pagination. Selecting a calendar date shows all bills for that day, including dates outside this range. Marking or undoing a payment targets that exact bill period.
+The dashboard provides Upcoming, Overdue, and Paid filters with pagination. Upcoming bills cover the next 45 days; the Paid filter shows recent periods. Overdue bills remain visible from their stored tracking start until marked paid or removed. Legacy schedules without a full date start tracking from the previous 45-day lookback at migration, without inventing earlier unpaid history. Selecting a calendar date shows all bills for that day, including dates outside the queue range. Marking or undoing a payment targets that exact bill period.
+
+Paid-period totals use the recorded payment amount even after the bill's current amount changes. Payment history supports search, recorded-month and status filters, and responsive phone rows with the bill's due date. CSV exports respect the active history filters and escape formula-like text. Backups still contain the complete local state regardless of those filters.
 
 Real money movement needs a backend and regulated providers. A production build should use tokenized bank access, never store raw credentials, and route payments through approved rails.
 

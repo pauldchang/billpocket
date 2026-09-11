@@ -192,3 +192,72 @@ test("bare email senders resolve to a name rather than an email address", () => 
   const text = 'From: billing@brightgrid.com\nSubject: Your statement';
   assert.equal(run(`findBillerName(${JSON.stringify(text)})`), 'Brightgrid');
 });
+
+test("one-time and recurring overdue bills remain visible beyond 45 days", () => {
+  const { run } = app();
+  run(`state.bills = [
+    {id:'old-order', name:'Purchase', category:'purchase', amount:25, frequency:'one-time', dueDay:10, dueDate:'2026-06-10'},
+    {id:'rent', name:'Rent', category:'rent', amount:100, frequency:'monthly', dueDay:1, dueDate:'2026-01-01'}
+  ]; state.payments = [{id:'paid-may', billId:'rent', amount:100, date:'2026-05-01', periodKey:'2026-05-01', status:'Paid'}];`);
+  assert.equal(run("getAgendaGroups().overdue.some(item => item.bill.id === 'old-order')"), true);
+  assert.equal(run("getAgendaGroups().overdue.filter(item => item.bill.id === 'rent').length"), 8);
+  assert.equal(run("getUpcomingBills(7, {allOverdue:true}).some(item => toDateInputValue(item.dueDate) === '2026-01-01')"), true);
+  assert.equal(run("getAgendaGroups().overdue.some(item => toDateInputValue(item.dueDate) === '2026-05-01')"), false);
+});
+
+test("legacy tracking migration preserves its start after later reloads", () => {
+  const first = app();
+  first.run(`state.bills = [{id:'legacy', name:'Rent', category:'rent', amount:100, frequency:'monthly', dueDay:1}]; saveState();`);
+  const saved = first.run('JSON.stringify(state)');
+  const started = first.run('state.bills[0].trackingStartedOn');
+  const later = app('2027-01-08T12:00:00');
+  later.run(`state = hydrateState(${saved})`);
+  assert.equal(later.run('state.bills[0].trackingStartedOn'), started);
+  assert.equal(later.run("getOverdueBills().some(item => toDateInputValue(item.dueDate) === '2026-08-01')"), true);
+  assert.equal(later.run("getOverdueBills().some(item => toDateInputValue(item.dueDate) === '2026-06-01')"), false);
+});
+
+test("editing a bill amount does not rewrite a paid period or its forecast", () => {
+  const { run } = app();
+  run(`state.bills = [{id:'bill', name:'Utilities', category:'utilities', amount:100, frequency:'monthly', dueDay:5, dueDate:'2026-09-05'}];
+    markBillPaidForPeriod('bill', '2026-09-05'); state.bills[0].amount = 175;`);
+  assert.equal(run('getMonthStatus().paidTotal'), 100);
+  assert.equal(run('getMonthStatus().total'), 100);
+  assert.equal(run('getForecast(2)[0].total'), 100);
+  assert.equal(run('getForecast(2)[1].total'), 175);
+  assert.equal(run('state.payments[0].amount'), 100);
+});
+
+test("older recurring statements cannot overwrite newer amounts", () => {
+  const { run } = app();
+  run(`state.bills = [{id:'bill', name:'Water', category:'utilities', amount:75, frequency:'monthly', dueDay:14, dueDate:'2026-06-14', lastStatementDate:'2026-09-14'}];
+    globalThis.candidate = {name:'Water', amount:50, frequency:'monthly', dueDate:parseLocalDate('2026-08-14'), dateFound:true};`);
+  assert.equal(run('getCandidateMatch(candidate).status'), 'older-statement');
+  run("candidate.dueDate = parseLocalDate('2026-10-14')");
+  assert.equal(run('getCandidateMatch(candidate).status'), 'updates-existing');
+  assert.equal(run('isOlderStatement(undefined, candidate)'), false);
+});
+
+test("history filters combine merchant, recorded month, and status", () => {
+  const { run } = app();
+  run(`state.payments = [
+    {id:'p1', billName:'City Water', date:'2026-09-08', amount:75, status:'Paid', reference:'WATER-1'},
+    {id:'p2', billName:'City Water', date:'2026-08-08', amount:60, status:'Paid'},
+    {id:'p3', billName:'City Water', date:'2026-09-09', amount:80, status:'Demo'},
+    {id:'p4', billName:'Rent', date:'2026-09-01', amount:1000, status:'Paid'}];`);
+  assert.equal(run("getFilteredPayments({query:'water', month:'2026-09', status:'Paid'}).length"), 1);
+  assert.equal(run("getFilteredPayments({query:'water-1'})[0].id"), 'p1');
+  assert.equal(run("getFilteredPayments({status:'Demo'})[0].id"), 'p3');
+  assert.equal(run("getFilteredPayments({month:'2027-01'}).length"), 0);
+});
+
+test("CSV exports preserve numeric negatives and treat formula-like labels as text", () => {
+  const { run } = app();
+  assert.equal(run(`createCsv([['=1+2', '-50.00', 'Water, City']])`), '"\'=1+2","-50.00","Water, City"');
+});
+
+test("legacy month-end one-time dates agree with the calendar", () => {
+  const { run } = app();
+  run(`globalThis.bill = {frequency:'one-time', dueDay:31, oneTimeMonth:1, oneTimeYear:2026}`);
+  assert.equal(run('toDateInputValue(getNextDueDate(bill))'), '2026-02-28');
+});

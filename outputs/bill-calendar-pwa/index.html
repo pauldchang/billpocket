@@ -419,7 +419,7 @@
         <section class="view" id="paymentsView" data-title="History">
           <div class="section-toolbar">
             <div>
-              <p class="eyebrow">Scheduled and sent</p>
+              <p class="eyebrow">Paid marks and demos</p>
               <h2>Payment history</h2>
             </div>
             <button class="secondary-btn small" type="button" id="exportPaymentsBtn">
@@ -447,13 +447,34 @@
               <input id="restoreDataInput" type="file" accept="application/json,.json" hidden>
             </div>
           </section>
-          <div class="responsive-table">
+          <div class="history-filters">
+            <label class="field">
+              <span>Search payments</span>
+              <input id="paymentSearchInput" type="search" placeholder="Bill or reference">
+            </label>
+            <label class="field">
+              <span>Recorded month</span>
+              <input id="paymentMonthFilter" type="month">
+            </label>
+            <label class="field">
+              <span>Status</span>
+              <select id="paymentStatusFilter">
+                <option value="all">All records</option>
+                <option value="Paid">Paid</option>
+                <option value="Demo">Demo</option>
+              </select>
+            </label>
+            <button class="ghost-btn" id="clearPaymentFiltersBtn" type="button">Clear filters</button>
+          </div>
+          <p class="agenda-summary" id="paymentHistorySummary" aria-live="polite"></p>
+          <div class="responsive-table payment-history">
             <table>
               <thead>
                 <tr>
-                  <th>Date</th>
+                  <th>Recorded</th>
                   <th>Biller</th>
                   <th>Amount</th>
+                  <th>Bill due</th>
                   <th>Source</th>
                   <th>Status</th>
                   <th>Reference</th>

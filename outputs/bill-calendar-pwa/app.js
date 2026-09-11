@@ -278,6 +278,7 @@ const seedState = {
 
 let storageError = "";
 let unreadableStorage = false;
+let needsStateSave = false;
 let state = loadState();
 let displayDate = startOfMonth(new Date());
 let deferredInstallPrompt = null;
@@ -343,7 +344,7 @@ function loadState() {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (!stored) {
-      return structuredClone(seedState);
+      return hydrateState(seedState);
     }
     const parsed = JSON.parse(stored);
     if (!getBackupState(parsed)) throw new Error("Invalid saved data");
@@ -362,7 +363,11 @@ function hydrateState(parsed = {}) {
     ...seed,
     ...source,
     settings: { ...seed.settings, ...(source.settings || {}) },
-    bills: Array.isArray(source.bills) ? source.bills : seed.bills,
+    bills: (Array.isArray(source.bills) ? source.bills : seed.bills).map((bill) => {
+      if (bill.trackingStartedOn) return bill;
+      needsStateSave = true;
+      return { ...bill, trackingStartedOn: toDateInputValue(getBillTrackingStart(bill)) };
+    }),
     services: mergeById(source.services, seed.services),
     accounts: Array.isArray(source.accounts) ? source.accounts : seed.accounts,
     payments: (Array.isArray(source.payments) ? source.payments : seed.payments)
@@ -389,6 +394,8 @@ function mergeById(savedItems = [], defaultItems = []) {
 function saveState() {
   try {
     if (unreadableStorage) throw new Error("Unreadable saved data");
+    state.bills = state.bills.map((bill) => bill.trackingStartedOn ? bill
+      : { ...bill, trackingStartedOn: toDateInputValue(getBillTrackingStart(bill)) });
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     storageError = "";
     renderStorageNotice();
@@ -504,7 +511,53 @@ function getUpcomingBills(days = 45, options = {}) {
       }
     });
   }
+  if (options.allOverdue) {
+    const seen = new Set(results.map((item) => `${item.bill.id}:${toDateInputValue(item.dueDate)}`));
+    getOverdueBills().forEach((item) => {
+      if (!seen.has(`${item.bill.id}:${toDateInputValue(item.dueDate)}`)) results.push(item);
+    });
+  }
   return results.sort((a, b) => a.dueDate - b.dueDate);
+}
+
+function getOneTimeDueDate(bill) {
+  if (bill.dueDate) return parseLocalDate(bill.dueDate);
+  const month = new Date(bill.oneTimeYear ?? new Date().getFullYear(), bill.oneTimeMonth ?? new Date().getMonth(), 1);
+  return new Date(month.getFullYear(), month.getMonth(), Math.min(bill.dueDay, endOfMonth(month).getDate()));
+}
+
+function getBillTrackingStart(bill) {
+  if (bill.trackingStartedOn) return parseLocalDate(bill.trackingStartedOn);
+  if (bill.frequency === "one-time") return getOneTimeDueDate(bill);
+  if (bill.dueDate) return parseLocalDate(bill.dueDate);
+  const today = new Date();
+  // Keep the legacy queue's known range; persist it so old bills stop aging out.
+  return new Date(today.getFullYear(), today.getMonth(), today.getDate() - 45);
+}
+
+function getOverdueBills() {
+  const today = new Date();
+  const results = [];
+  state.bills.forEach((bill) => {
+    const first = getBillTrackingStart(bill);
+    if (bill.frequency === "one-time") {
+      const dueDate = getOneTimeDueDate(bill);
+      const diff = dayDiff(today, dueDate);
+      if (diff < 0 && !getPaidRecordForPeriod(bill, dueDate)) results.push({ bill, dueDate, diff });
+      return;
+    }
+    for (let month = startOfMonth(first); month <= today; month = addMonths(month, 1)) {
+      const dueDate = getBillDueDateForMonth(bill, month);
+      if (!dueDate || dueDate < first) continue;
+      const diff = dayDiff(today, dueDate);
+      if (diff < 0 && !getPaidRecordForPeriod(bill, dueDate)) results.push({ bill, dueDate, diff });
+    }
+  });
+  return results.sort((a, b) => a.dueDate - b.dueDate);
+}
+
+function getBillPeriodAmount(bill, dueDate) {
+  return Number(getPaidRecordForPeriod(bill, dueDate)?.amount ?? bill.amount);
 }
 
 function getBillsForMonth(monthDate) {
@@ -521,7 +574,7 @@ function getForecast(months = 6) {
     const bills = getBillsForMonth(month).filter((item) => {
       return state.settings.includeAutopay || !item.bill.autopay;
     });
-    const total = bills.reduce((sum, item) => sum + Number(item.bill.amount), 0);
+    const total = bills.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
     const afterBills = Number(state.settings.monthlyIncome || 0) - total;
     const reserveGap = Math.max(0, Number(state.settings.reserveTarget || 0) - afterBills);
     return { month, bills, total, afterBills, reserveGap };
@@ -532,8 +585,8 @@ function getMonthStatus(monthDate = new Date()) {
   const bills = getBillsForMonth(monthDate);
   const paid = bills.filter((item) => getPaidRecordForPeriod(item.bill, item.dueDate));
   const open = bills.filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
-  const total = bills.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
-  const paidTotal = paid.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
+  const total = bills.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
+  const paidTotal = paid.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   const openTotal = open.reduce((sum, item) => sum + Number(item.bill.amount || 0), 0);
   const afterBills = Number(state.settings.monthlyIncome || 0) - total;
 
@@ -586,14 +639,14 @@ function render() {
 
 function renderPocketOverview() {
   const monthStatus = getMonthStatus(new Date());
-  const upcoming = getUpcomingBills(60, { lateDays: 45 }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
+  const upcoming = getUpcomingBills(60, { lateDays: 45, allOverdue: true }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
   const next = upcoming[0];
   const subscriptionTotal = getBillsForMonth(new Date())
     .filter((item) => item.bill.category === "subscription")
-    .reduce((sum, item) => sum + Number(item.bill.amount), 0);
+    .reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   const purchaseTotal = getBillsForMonth(new Date())
     .filter((item) => item.bill.category === "purchase")
-    .reduce((sum, item) => sum + Number(item.bill.amount), 0);
+    .reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
 
   if (!next) {
     els.quickPayHeading.textContent = "No unpaid bills queued";
@@ -667,9 +720,9 @@ function renderStatus() {
 
 function renderMetrics() {
   const monthStatus = getMonthStatus(new Date());
-  const dueSoon = getUpcomingBills(7, { lateDays: 45 }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
+  const dueSoon = getUpcomingBills(7, { lateDays: 45, allOverdue: true }).filter((item) => !getPaidRecordForPeriod(item.bill, item.dueDate));
   const purchases = monthStatus.bills.filter((item) => item.bill.category === "purchase");
-  const purchaseTotal = purchases.reduce((sum, item) => sum + Number(item.bill.amount), 0);
+  const purchaseTotal = purchases.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   const metrics = [
     {
       label: "Open",
@@ -726,7 +779,7 @@ function renderCalendar() {
     const date = new Date(first.getFullYear(), first.getMonth(), day);
     const key = toDateInputValue(date);
     const bills = byDate.get(key) || [];
-    const total = bills.reduce((sum, bill) => sum + Number(bill.amount), 0);
+    const total = bills.reduce((sum, bill) => sum + getBillPeriodAmount(bill, date), 0);
     cells.push(`
       <div class="calendar-cell ${isSameDay(date, today) ? "is-today" : ""}">
         <div class="calendar-day-number">
@@ -736,7 +789,7 @@ function renderCalendar() {
         ${bills.slice(0, 3).map((bill) => {
           const paid = Boolean(getPaidRecordForPeriod(bill, date));
           return `
-            <button class="bill-pill ${bill.category} ${paid ? "is-paid" : ""}" type="button" data-edit-bill="${bill.id}" title="${escapeHtml(bill.name)} ${formatMoney(bill.amount)}${paid ? " - Paid" : ""}">
+            <button class="bill-pill ${bill.category} ${paid ? "is-paid" : ""}" type="button" data-edit-bill="${bill.id}" title="${escapeHtml(bill.name)} ${formatMoney(getBillPeriodAmount(bill, date))}${paid ? " - Paid" : ""}">
               ${escapeHtml(bill.name)}
             </button>
           `;
@@ -751,7 +804,7 @@ function renderCalendar() {
 
 function getAgendaGroups() {
   const groups = { upcoming: [], overdue: [], paid: [] };
-  getUpcomingBills(45, { lateDays: 45 }).forEach((item) => {
+  getUpcomingBills(45, { lateDays: 45, allOverdue: true }).forEach((item) => {
     const group = getPaidRecordForPeriod(item.bill, item.dueDate) ? "paid" : item.diff < 0 ? "overdue" : "upcoming";
     groups[group].push(item);
   });
@@ -768,8 +821,8 @@ function renderAgenda() {
     button.querySelector(".filter-count").textContent = groups[button.dataset.agendaFilter].length;
   });
   document.getElementById("agendaHeading").textContent = selectedAgendaDate ? formatDate(parseLocalDate(selectedAgendaDate)) : "Your bills";
-  const range = selectedAgendaDate ? "This day" : agendaFilter === "upcoming" ? "Next 45 days" : agendaFilter === "overdue" ? "Past 45 days" : "Recent bill periods";
-  const total = items.reduce((sum, item) => sum + Number(item.bill.amount), 0);
+  const range = selectedAgendaDate ? "This day" : agendaFilter === "upcoming" ? "Next 45 days" : agendaFilter === "overdue" ? "All tracked overdue bills" : "Recent bill periods";
+  const total = items.reduce((sum, item) => sum + getBillPeriodAmount(item.bill, item.dueDate), 0);
   document.getElementById("agendaSummary").textContent = `${range} - ${items.length} bill${items.length === 1 ? "" : "s"} - ${formatMoney(total)}`;
   const upcoming = items.slice(0, agendaLimit);
   const moreButton = document.getElementById("agendaMoreBtn");
@@ -789,7 +842,7 @@ function renderAgenda() {
         <div class="date-badge">${dueDate.getDate()}</div>
         <div class="agenda-main">
           <strong>${escapeHtml(bill.name)}</strong>
-          <span>${formatDate(dueDate)} - ${formatMoney(bill.amount)}</span>
+          <span>${formatDate(dueDate)} - ${formatMoney(getBillPeriodAmount(bill, dueDate))}</span>
         </div>
         ${paidRecord?.manualMark ? `
           <div class="agenda-actions">
@@ -869,7 +922,7 @@ function renderBills() {
         <div class="bill-meta">
           <div class="meta-box">
             <span>Amount</span>
-            <strong>${formatMoney(bill.amount)}</strong>
+            <strong>${formatMoney(getBillPeriodAmount(bill, dueDate))}</strong>
           </div>
           <div class="meta-box">
             <span>Next due</span>
@@ -893,12 +946,12 @@ function renderBills() {
             <span aria-hidden="true">$</span>
             <span>Demo pay</span>
           </button>
-          ${paidRecord ? `
+          ${paidRecord?.manualMark ? `
             <button class="secondary-btn small" type="button" data-unmark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">-</span>
               <span>Undo paid</span>
             </button>
-          ` : `
+          ` : paidRecord ? "" : `
             <button class="secondary-btn small" type="button" data-mark-bill-paid="${bill.id}" data-due-date="${toDateInputValue(dueDate)}">
               <span aria-hidden="true">OK</span>
               <span>Mark paid</span>
@@ -925,14 +978,12 @@ function renderBills() {
 function getNextDueDate(bill) {
   const today = new Date();
   if (bill.frequency === "one-time") {
-    return bill.dueDate ? parseLocalDate(bill.dueDate) : new Date(
-      bill.oneTimeYear ?? today.getFullYear(), bill.oneTimeMonth ?? today.getMonth(), bill.dueDay
-    );
+    return getOneTimeDueDate(bill);
   }
   if (bill.dueDate && dayDiff(today, parseLocalDate(bill.dueDate)) > 0) return parseLocalDate(bill.dueDate);
   const current = getBillDueDateForMonth(bill, today);
   if (current) return current;
-  const overdue = getUpcomingBills(0, { lateDays: 45 })
+  const overdue = getOverdueBills()
     .find((item) => item.bill.id === bill.id && !getPaidRecordForPeriod(bill, item.dueDate));
   if (overdue) return overdue.dueDate;
   for (let offset = 0; offset < 15; offset += 1) {
@@ -1063,23 +1114,42 @@ function renderConnections() {
   }
 }
 
+function getFilteredPayments({ query = "", month = "", status = "all" } = {}) {
+  const search = query.trim().toLowerCase();
+  return state.payments.filter((payment) => !month || payment.date.slice(0, 7) === month)
+    .filter((payment) => status === "all" || payment.status === status)
+    .filter((payment) => !search || [payment.billName, payment.reference, payment.source]
+      .some((value) => String(value || "").toLowerCase().includes(search)))
+    .sort((a, b) => b.date.localeCompare(a.date));
+}
+
+function getPaymentFilters() {
+  return {
+    query: document.getElementById("paymentSearchInput").value,
+    month: document.getElementById("paymentMonthFilter").value,
+    status: document.getElementById("paymentStatusFilter").value || "all"
+  };
+}
+
 function renderPayments() {
-  if (!state.payments.length) {
-    els.paymentRows.innerHTML = `<tr><td colspan="6">No payments recorded.</td></tr>`;
+  const payments = getFilteredPayments(getPaymentFilters());
+  const paidTotal = payments.filter((payment) => payment.status === "Paid")
+    .reduce((sum, payment) => sum + Number(payment.amount), 0);
+  document.getElementById("paymentHistorySummary").textContent = `${payments.length} record${payments.length === 1 ? "" : "s"} - ${formatMoney(paidTotal)} marked paid`;
+  if (!payments.length) {
+    els.paymentRows.innerHTML = `<tr class="history-empty"><td colspan="7">${state.payments.length ? "No payments match these filters." : "No payments recorded."}</td></tr>`;
     return;
   }
 
-  els.paymentRows.innerHTML = state.payments
-    .slice()
-    .sort((a, b) => new Date(b.date) - new Date(a.date))
-    .map((payment) => `
+  els.paymentRows.innerHTML = payments.map((payment) => `
       <tr>
-        <td>${formatDate(parseLocalDate(payment.date))}</td>
-        <td>${escapeHtml(payment.billName)}</td>
-        <td>${formatMoney(payment.amount)}</td>
-        <td>${escapeHtml(payment.source)}</td>
-        <td><span class="status-tag ${payment.status === "Paid" ? "paid" : "pending"}">${escapeHtml(payment.status)}</span></td>
-        <td>${escapeHtml(payment.reference)}${payment.manualMark && payment.status === "Paid" && state.bills.some((bill) => bill.id === payment.billId) ? `
+        <td data-label="Recorded">${formatDate(parseLocalDate(payment.date))}</td>
+        <td data-label="Bill" class="history-biller">${escapeHtml(payment.billName)}</td>
+        <td data-label="Amount">${formatMoney(payment.amount)}</td>
+        <td data-label="Bill due">${payment.periodKey ? formatDate(parseLocalDate(payment.periodKey)) : "Not recorded"}</td>
+        <td data-label="Source">${escapeHtml(payment.source)}</td>
+        <td data-label="Status"><span class="status-tag ${payment.status === "Paid" ? "paid" : "pending"}">${escapeHtml(payment.status)}</span></td>
+        <td data-label="Reference" class="history-reference">${escapeHtml(payment.reference)}${payment.manualMark && payment.periodKey && payment.status === "Paid" && state.bills.some((bill) => bill.id === payment.billId) ? `
           <button class="ghost-btn small" type="button" data-unmark-bill-paid="${escapeHtml(payment.billId)}" data-due-date="${escapeHtml(payment.periodKey)}" aria-label="Undo paid for ${escapeHtml(payment.billName)}">Undo</button>
         ` : ""}</td>
       </tr>
@@ -1140,7 +1210,7 @@ function renderEmailScan() {
       <article class="scan-card ${match.status}" data-scan-card="${candidate.id}">
         <div class="scan-card-head">
           <label class="check-row scan-check">
-            <input type="checkbox" data-scan-select="${candidate.id}" ${candidate.selected === false ? "" : "checked"}>
+            <input type="checkbox" data-scan-select="${candidate.id}" ${(candidate.selected ?? match.status !== "older-statement") ? "checked" : ""}>
             <span>Import</span>
           </label>
           <div class="scan-badges">
@@ -1247,6 +1317,9 @@ function findMatchingCapturedBill(candidate) {
 function getCandidateMatch(candidate) {
   const exact = findMatchingCapturedBill(candidate);
   if (exact) {
+    if (isOlderStatement(exact, candidate)) {
+      return { status: "older-statement", label: "Older statement - current bill kept", tagClass: "manual", bill: exact };
+    }
     return {
       status: "updates-existing",
       label: `Updates ${exact.name}`,
@@ -1278,6 +1351,12 @@ function getCandidateMatch(candidate) {
     tagClass: "manual",
     bill: null
   };
+}
+
+function isOlderStatement(existing, candidate) {
+  const latestDate = existing?.lastStatementDate || existing?.dueDate;
+  return Boolean(latestDate && candidate.dateFound && existing.frequency !== "one-time"
+    && candidate.frequency !== "one-time" && toDateInputValue(candidate.dueDate) < latestDate);
 }
 
 function namesLookRelated(a, b) {
@@ -2011,6 +2090,9 @@ function importScannedBills() {
 
   let imported = 0;
   let learned = 0;
+  let skipped = 0;
+  selected.sort((a, b) => document.querySelector(`[data-scan-due-date="${a.id}"]`).value
+    .localeCompare(document.querySelector(`[data-scan-due-date="${b.id}"]`).value));
   selected.forEach((candidate) => {
     const name = document.querySelector(`[data-scan-name="${candidate.id}"]`)?.value.trim() || candidate.name;
     const amount = Number(document.querySelector(`[data-scan-amount="${candidate.id}"]`).value);
@@ -2023,6 +2105,10 @@ function importScannedBills() {
     const selectedChoice = candidate.amountChoices?.[selectedChoiceIndex];
     const selectedType = selectedChoice && Math.abs(Number(selectedChoice.value) - amount) < 0.01 ? selectedChoice.type : "manual";
     const existing = findMatchingCapturedBill({ ...candidate, name, frequency, amount, dueDate, dateFound: true });
+    if (isOlderStatement(existing, { frequency, dueDate, dateFound: true })) {
+      skipped += 1;
+      return;
+    }
 
     const bill = {
       ...existing,
@@ -2030,6 +2116,7 @@ function importScannedBills() {
       name,
       category,
       amount,
+      lastStatementDate: dueDateValue,
       dueDay,
       dueDate: existing?.dueDate && existing.frequency === frequency
         && getBillDueDateForMonth(existing, dueDate) ? existing.dueDate : dueDateValue,
@@ -2069,7 +2156,8 @@ function importScannedBills() {
       at: new Date().toISOString(),
       found: emailScanCandidates.length,
       imported,
-      learned
+      learned,
+      skipped
     }
   ].slice(-20);
   emailScanCandidates = [];
@@ -2079,7 +2167,7 @@ function importScannedBills() {
   saveState();
   render();
   showView("bills");
-  showToast(`${imported} bill${imported === 1 ? "" : "s"} imported.`);
+  showToast(`${imported} bill${imported === 1 ? "" : "s"} imported.${skipped ? ` ${skipped} older statement${skipped === 1 ? "" : "s"} skipped.` : ""}`);
 }
 
 function clearEmailScan() {
@@ -2471,8 +2559,16 @@ function saveBudgetSettings() {
   showToast("Budget settings saved.");
 }
 
+function createCsv(rows) {
+  return rows.map((row) => row.map((cell) => {
+    let value = String(cell ?? "");
+    if (/^\s*[=+@-]/.test(value) && !/^-?\d+(?:\.\d+)?$/.test(value)) value = `'${value}`;
+    return `"${value.replaceAll('"', '""')}"`;
+  }).join(",")).join("\n");
+}
+
 function exportCsv(filename, rows) {
-  const csv = rows.map((row) => row.map((cell) => `"${String(cell).replaceAll('"', '""')}"`).join(",")).join("\n");
+  const csv = createCsv(rows);
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
@@ -2497,11 +2593,12 @@ function exportBudget() {
 
 function exportPayments() {
   const rows = [
-    ["Date", "Biller", "Amount", "Source", "Method", "Status", "Reference"],
-    ...state.payments.map((payment) => [
+    ["Recorded date", "Biller", "Amount", "Bill due date", "Source", "Method", "Status", "Reference"],
+    ...getFilteredPayments(getPaymentFilters()).map((payment) => [
       payment.date,
       payment.billName,
       Number(payment.amount).toFixed(2),
+      payment.periodKey || "",
       payment.source,
       payment.method,
       payment.status,
@@ -2564,6 +2661,8 @@ function getBackupState(payload) {
     && Object.hasOwn(categoryLabels, bill.category)
     && ["monthly", "quarterly", "annual", "one-time"].includes(bill.frequency)
     && (!bill.dueDate || validDate(bill.dueDate))
+    && (!bill.trackingStartedOn || validDate(bill.trackingStartedOn))
+    && (!bill.lastStatementDate || validDate(bill.lastStatementDate))
     && (bill.oneTimeMonth === undefined || Number.isInteger(bill.oneTimeMonth) && bill.oneTimeMonth >= 0 && bill.oneTimeMonth <= 11)
     && (bill.oneTimeYear === undefined || Number.isInteger(bill.oneTimeYear) && bill.oneTimeYear >= 1000 && bill.oneTimeYear <= 9999))) return null;
   if (!source.payments.every((payment) => validDate(payment.date) && validNumber(payment.amount)
@@ -2659,6 +2758,15 @@ function bindEvents() {
   document.getElementById("saveBudgetSettingsBtn").addEventListener("click", saveBudgetSettings);
   document.getElementById("exportBudgetBtn").addEventListener("click", exportBudget);
   document.getElementById("exportPaymentsBtn").addEventListener("click", exportPayments);
+  document.getElementById("paymentSearchInput").addEventListener("input", renderPayments);
+  document.getElementById("paymentMonthFilter").addEventListener("input", renderPayments);
+  document.getElementById("paymentStatusFilter").addEventListener("change", renderPayments);
+  document.getElementById("clearPaymentFiltersBtn").addEventListener("click", () => {
+    document.getElementById("paymentSearchInput").value = "";
+    document.getElementById("paymentMonthFilter").value = "";
+    document.getElementById("paymentStatusFilter").value = "all";
+    renderPayments();
+  });
   document.getElementById("exportDataBtn").addEventListener("click", exportDataBackup);
   document.getElementById("importDataBtn").addEventListener("click", () => els.restoreDataInput.click());
   els.restoreDataInput.addEventListener("change", (event) => importDataBackup(event.target.files));
@@ -2829,6 +2937,7 @@ function init() {
   }).format(new Date());
 
   bindEvents();
+  if (needsStateSave && !unreadableStorage) saveState();
   render();
 
   if ("serviceWorker" in navigator) {
