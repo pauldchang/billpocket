@@ -1,4 +1,5 @@
 const STORAGE_KEY = "billflow-pwa-state-v1";
+const APP_VERSION = "v19";
 
 const categoryLabels = {
   rent: "Rent",
@@ -181,6 +182,7 @@ const seedState = {
     }
   ],
   accounts: [],
+  transactions: [],
   payments: [
     {
       id: "pay-1001",
@@ -290,6 +292,7 @@ let emailScanTimer = null;
 let agendaFilter = "upcoming";
 let agendaLimit = 6;
 let selectedAgendaDate = null;
+let renderedDay = toDateInputValue(new Date());
 
 const els = {
   todayLabel: document.getElementById("todayLabel"),
@@ -374,6 +377,7 @@ function hydrateState(parsed = {}) {
     }),
     services: mergeById(source.services, seed.services),
     accounts: Array.isArray(source.accounts) ? source.accounts : seed.accounts,
+    transactions: Array.isArray(source.transactions) ? source.transactions : [],
     payments: (Array.isArray(source.payments) ? source.payments : seed.payments)
       .map((payment) => payment.status === "Scheduled" ? { ...payment, status: "Demo" } : payment),
     snapshots: Array.isArray(source.snapshots) ? source.snapshots : seed.snapshots,
@@ -699,6 +703,7 @@ function escapeHtml(value) {
 }
 
 function render() {
+  renderTodayLabel();
   renderStorageNotice();
   renderStatus();
   renderPocketOverview();
@@ -712,6 +717,7 @@ function render() {
   renderEmailScan();
   renderConnections();
   renderPayments();
+  renderTransactions();
   renderDataBackupStatus();
 }
 
@@ -1097,10 +1103,12 @@ function getPaidRecordForPeriod(bill, dueDate = getNextDueDate(bill)) {
   }) || null;
 }
 
-function renderBudget() {
-  els.incomeInput.value = state.settings.monthlyIncome;
-  els.reserveInput.value = state.settings.reserveTarget;
-  els.includeAutopayInput.checked = state.settings.includeAutopay;
+function renderBudget(preserveInputs = false) {
+  if (!preserveInputs) {
+    els.incomeInput.value = state.settings.monthlyIncome;
+    els.reserveInput.value = state.settings.reserveTarget;
+    els.includeAutopayInput.checked = state.settings.includeAutopay;
+  }
 
   els.budgetRows.innerHTML = getForecast(12).map((item) => `
     <tr>
@@ -1345,6 +1353,15 @@ function renderEmailScan() {
             </select>
           </label>
         </div>
+        <label class="field scan-destination">
+          <span>Import destination</span>
+          <select data-scan-target="${candidate.id}">
+            <option value="auto" ${(candidate.importTarget || "auto") === "auto" ? "selected" : ""}>Automatic match</option>
+            <option value="new" ${candidate.importTarget === "new" ? "selected" : ""}>Create a separate bill</option>
+            ${candidate.importTarget?.startsWith("bill:") && !getCaptureTargetBills(candidate).some((bill) => `bill:${bill.id}` === candidate.importTarget) ? `<option value="${escapeHtml(candidate.importTarget)}" selected disabled>Choose an available destination</option>` : ""}
+            ${getCaptureTargetBills(candidate).map((bill) => `<option value="bill:${escapeHtml(bill.id)}" ${candidate.importTarget === `bill:${bill.id}` ? "selected" : ""}>Update ${escapeHtml(bill.name)} - ${formatMoney(bill.amount)} - ${formatDate(getScheduleEditDate(bill))} - ${escapeHtml(bill.notes || capitalize(bill.frequency))}</option>`).join("")}
+          </select>
+        </label>
         <p class="scan-source">${escapeHtml(candidate.source)}</p>
         ${candidate.orderId ? `<p class="scan-source">Order ${escapeHtml(candidate.orderId)}</p>` : ""}
         ${candidate.ruleApplied ? `<p class="scan-learned">Using learned rule: prefer ${escapeHtml(getAmountTypeLabel(candidate.selectedAmountType))} for ${escapeHtml(candidate.name)}.</p>` : ""}
@@ -1392,8 +1409,12 @@ function getAmountTypeLabel(type) {
   return labels[type] || labels.generic;
 }
 
-function findMatchingCapturedBill(candidate) {
-  return state.bills.find((bill) => {
+function getCaptureTargetBills(candidate, bills = state.bills) {
+  return bills.filter((bill) => (bill.frequency === "one-time") === (candidate.frequency === "one-time"));
+}
+
+function findMatchingCapturedBills(candidate, bills = state.bills) {
+  return bills.filter((bill) => {
     if (normalizeBillerKey(bill.name) !== normalizeBillerKey(candidate.name)) return false;
     if (bill.frequency !== "one-time" && candidate.frequency !== "one-time") return true;
     if (bill.frequency !== candidate.frequency) return false;
@@ -1403,8 +1424,28 @@ function findMatchingCapturedBill(candidate) {
   });
 }
 
+function findMatchingCapturedBill(candidate) {
+  const matches = findMatchingCapturedBills(candidate);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function getCaptureDestination(candidate, bills = state.bills) {
+  const target = candidate.importTarget || "auto";
+  if (target === "new") return {};
+  if (target !== "auto") {
+    const bill = getCaptureTargetBills(candidate, bills).find((item) => `bill:${item.id}` === target);
+    return bill ? { bill } : { error: "Choose an available bill or create a separate bill." };
+  }
+  const matches = findMatchingCapturedBills(candidate, bills);
+  if (matches.length > 1) return { error: "Multiple bills match. Choose an import destination." };
+  return { bill: matches[0] };
+}
+
 function getCandidateMatch(candidate) {
-  const exact = findMatchingCapturedBill(candidate);
+  const destination = getCaptureDestination(candidate);
+  if (destination.error) return { status: "ambiguous-match", label: destination.error, tagClass: "pending", bill: null };
+  if (candidate.importTarget === "new") return { status: "new-bill", label: "Creates a separate bill", tagClass: "manual", bill: null };
+  const exact = destination.bill;
   if (exact) {
     if (candidate.dateFound && isPaidOneTimeScheduleChange(exact, candidate.frequency, candidate.dueDate)) {
       return { status: "paid-date", label: "Paid purchase - original date kept", tagClass: "manual", bill: exact };
@@ -1584,6 +1625,15 @@ function openAttachmentPicker() {
 async function importAttachmentFiles(files) {
   const list = [...files];
   if (!list.length) return;
+
+  const csvFiles = list.filter((file) => /\.csv$/i.test(file.name) || file.type === "text/csv");
+  if (csvFiles.length) {
+    els.emailFileInput.value = "";
+    if (list.length !== 1) { showToast("Choose one CSV at a time for transaction import."); return; }
+    showView("payments");
+    await openCsvFile(csvFiles[0]);
+    return;
+  }
 
   const textParts = [];
   const skipped = [];
@@ -2184,9 +2234,11 @@ function importScannedBills() {
   let learned = 0;
   let skipped = 0;
   let paidDateSkipped = 0;
+  const plannedBills = state.bills.map((bill) => ({ ...bill }));
+  const learnedRules = [];
   selected.sort((a, b) => document.querySelector(`[data-scan-due-date="${a.id}"]`).value
     .localeCompare(document.querySelector(`[data-scan-due-date="${b.id}"]`).value));
-  selected.forEach((candidate) => {
+  for (const candidate of selected) {
     const name = document.querySelector(`[data-scan-name="${candidate.id}"]`)?.value.trim() || candidate.name;
     const amount = Number(document.querySelector(`[data-scan-amount="${candidate.id}"]`).value);
     const dueDateValue = document.querySelector(`[data-scan-due-date="${candidate.id}"]`).value;
@@ -2197,14 +2249,20 @@ function importScannedBills() {
     const selectedChoiceIndex = Number(document.querySelector(`[data-scan-amount-choice="${candidate.id}"]`)?.value || 0);
     const selectedChoice = candidate.amountChoices?.[selectedChoiceIndex];
     const selectedType = selectedChoice && Math.abs(Number(selectedChoice.value) - amount) < 0.01 ? selectedChoice.type : "manual";
-    const existing = findMatchingCapturedBill({ ...candidate, name, frequency, amount, dueDate, dateFound: true });
+    const importTarget = document.querySelector(`[data-scan-target="${candidate.id}"]`)?.value || candidate.importTarget || "auto";
+    const destination = getCaptureDestination({ ...candidate, name, frequency, amount, dueDate, dateFound: true, importTarget }, plannedBills);
+    if (destination.error) {
+      showToast(`${name}: ${destination.error}`);
+      return;
+    }
+    const existing = destination.bill;
     if (isOlderStatement(existing, { frequency, dueDate, dateFound: true })) {
       skipped += 1;
-      return;
+      continue;
     }
     if (isPaidOneTimeScheduleChange(existing, frequency, dueDate)) {
       paidDateSkipped += 1;
-      return;
+      continue;
     }
 
     const bill = {
@@ -2230,18 +2288,21 @@ function importScannedBills() {
     if (existing) {
       Object.assign(existing, preserveBillSchedule(existing, bill, dueDate));
     } else {
-      state.bills.push(bill);
+      plannedBills.push(bill);
     }
-    learnCaptureRule(name, {
+    learnedRules.push([name, {
       preferredAmountType: selectedType,
       preferredCategory: category,
       preferredFrequency: frequency,
       lastAmount: amount,
       lastDueDay: dueDay
-    });
+    }]);
     imported += 1;
     learned += 1;
-  });
+  }
+
+  state.bills = plannedBills;
+  learnedRules.forEach(([name, rule]) => learnCaptureRule(name, rule));
 
   state.emailScanHistory = [
     ...(state.emailScanHistory || []),
@@ -2725,7 +2786,7 @@ function exportPayments() {
 
 function renderDataBackupStatus() {
   if (!els.dataBackupStatus) return;
-  els.dataBackupStatus.textContent = `${state.bills.length} bills, ${state.payments.length} payments`;
+  els.dataBackupStatus.textContent = `${state.bills.length} bills, ${state.payments.length} payments, ${state.transactions?.length || 0} transactions`;
 }
 
 function exportJson(filename, payload) {
@@ -2777,9 +2838,10 @@ function getBackupState(payload) {
     && ["monthly", "quarterly", "annual", "one-time"].includes(bill.frequency) && optionalDate(bill.dueDate)
     && (bill.oneTimeMonth === undefined || Number.isInteger(bill.oneTimeMonth) && bill.oneTimeMonth >= 0 && bill.oneTimeMonth <= 11)
     && (bill.oneTimeYear === undefined || Number.isInteger(bill.oneTimeYear) && bill.oneTimeYear >= 1000 && bill.oneTimeYear <= 9999);
-  for (const key of ["bills", "payments", "services", "accounts", "snapshots", "emailScanHistory", "captureSources", "activity"]) {
+  for (const key of ["bills", "payments", "transactions", "services", "accounts", "snapshots", "emailScanHistory", "captureSources", "activity"]) {
     if (source[key] !== undefined && !uniqueItems(source[key])) return null;
   }
+  if (source.transactions?.some((item) => !CsvImport.isValidTransaction(item))) return null;
   if (!source.bills.every((bill) => typeof bill.name === "string" && bill.name.trim()
     && validSchedule(bill)
     && Object.hasOwn(categoryLabels, bill.category)
@@ -2847,8 +2909,14 @@ function bindEvents() {
   window.addEventListener("storage", (event) => {
     if (event.storageArea === localStorage && (event.key === STORAGE_KEY || event.key === null)) checkForStorageChanges();
   });
-  window.addEventListener("focus", checkForStorageChanges);
-  window.addEventListener("pageshow", checkForStorageChanges);
+  window.addEventListener("focus", handleAppResume);
+  window.addEventListener("pageshow", handleAppResume);
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) handleAppResume();
+  });
+  window.setInterval(() => {
+    if (!document.hidden) refreshDateSensitiveViews();
+  }, 60000);
   window.addEventListener("beforeunload", (event) => {
     if (!unsavedChanges) return;
     event.preventDefault();
@@ -3042,6 +3110,15 @@ function bindEvents() {
   });
 
   document.body.addEventListener("change", (event) => {
+    const target = event.target.closest("[data-scan-target], [data-scan-frequency], [data-scan-name], [data-scan-due-date]");
+    if (target) {
+      const id = target.dataset.scanTarget || target.dataset.scanFrequency || target.dataset.scanName || target.dataset.scanDueDate;
+      const candidate = emailScanCandidates.find((item) => item.id === id);
+      if (candidate) {
+        if (target.dataset.scanTarget) candidate.importTarget = target.value;
+        renderEmailScan();
+      }
+    }
     const amountChoice = event.target.closest("[data-scan-amount-choice]");
     if (amountChoice) {
       updateScanAmountFromChoice(amountChoice.dataset.scanAmountChoice, amountChoice.value);
@@ -3082,16 +3159,108 @@ function bindEvents() {
   });
 }
 
-function init() {
+function renderTodayLabel() {
   els.todayLabel.textContent = new Intl.DateTimeFormat("en-US", {
     weekday: "long",
     month: "long",
     day: "numeric"
   }).format(new Date());
+}
+
+function refreshDateSensitiveViews() {
+  const today = toDateInputValue(new Date());
+  if (today === renderedDay) return false;
+  if (!selectedAgendaDate && toDateInputValue(displayDate).slice(0, 7) === renderedDay.slice(0, 7)) {
+    displayDate = startOfMonth(new Date());
+  }
+  renderedDay = today;
+  renderTodayLabel();
+  renderPocketOverview();
+  renderMetrics();
+  renderCalendar();
+  renderAgenda();
+  renderForecastBars();
+  renderBills();
+  renderBudget(true);
+  return true;
+}
+
+function handleAppResume() {
+  checkForStorageChanges();
+  refreshDateSensitiveViews();
+}
+
+function showAppUpdateReady() {
+  document.getElementById("updateNotice").hidden = false;
+  document.getElementById("appUpdateStatus").textContent = "Update ready. Refresh app to install.";
+}
+
+function getWorkerVersion(worker) {
+  return new Promise((resolve, reject) => {
+    const channel = new MessageChannel();
+    const finish = (version) => {
+      window.clearTimeout(timer);
+      channel.port1.close();
+      version ? resolve(version) : reject(new Error("Version unavailable"));
+    };
+    const timer = window.setTimeout(() => finish(null), 5000);
+    channel.port1.onmessage = (event) => finish(event.data?.version);
+    worker.postMessage({ type: "GET_VERSION" }, [channel.port2]);
+  });
+}
+
+async function checkForAppUpdate() {
+  const button = document.getElementById("checkAppUpdateBtn");
+  const status = document.getElementById("appUpdateStatus");
+  if (button.disabled) return;
+  if (!("serviceWorker" in navigator)) {
+    status.textContent = "Update checks require the hosted app over HTTPS.";
+    return;
+  }
+  if (navigator.onLine === false) {
+    status.textContent = "Offline. Connect to the internet to check for updates.";
+    return;
+  }
+  button.disabled = true;
+  status.textContent = "Checking for updates...";
+  try {
+    const registration = await navigator.serviceWorker.getRegistration();
+    if (!registration) throw new Error("App not registered");
+    await registration.update();
+    const pending = registration.installing || registration.waiting;
+    if (pending && pending.state !== "activated") {
+      await new Promise((resolve, reject) => {
+        const finish = (ok) => {
+          window.clearTimeout(timer);
+          pending.removeEventListener("statechange", changed);
+          ok ? resolve() : reject(new Error("Update not activated"));
+        };
+        const changed = () => {
+          if (pending.state === "activated" || pending.state === "redundant") finish(pending.state === "activated");
+        };
+        const timer = window.setTimeout(() => finish(false), 15000);
+        pending.addEventListener("statechange", changed);
+        changed();
+      });
+    }
+    const version = await getWorkerVersion(registration.active);
+    if (version !== APP_VERSION) showAppUpdateReady();
+    else status.textContent = `${APP_VERSION}: no newer update found.`;
+  } catch {
+    status.textContent = "Could not check for updates. Try again when online.";
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function init() {
 
   bindEvents();
+  initTransactions();
   if (needsStateSave && !unreadableStorage) saveState();
   render();
+  document.getElementById("appVersion").textContent = `BillPocket ${APP_VERSION}`;
+  document.getElementById("checkAppUpdateBtn").addEventListener("click", checkForAppUpdate);
 
   if ("serviceWorker" in navigator) {
     let refreshing = false;
@@ -3103,7 +3272,7 @@ function init() {
       window.location.reload();
     });
     navigator.serviceWorker.addEventListener("controllerchange", () => {
-      if (!refreshing) document.getElementById("updateNotice").hidden = false;
+      if (!refreshing) showAppUpdateReady();
     });
     navigator.serviceWorker.register("sw.js").then((registration) => {
       refreshing = !navigator.serviceWorker.controller;
@@ -3111,7 +3280,7 @@ function init() {
         const worker = registration.installing;
         worker?.addEventListener("statechange", () => {
           if (worker.state === "activated" && !refreshing) {
-            document.getElementById("updateNotice").hidden = false;
+            showAppUpdateReady();
           }
         });
       });

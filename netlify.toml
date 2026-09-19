@@ -1,6 +1,16 @@
 [build]
   publish = "outputs/bill-calendar-pwa"
-  command = ""
+command = ""
+
+[[headers]]
+for = "/csv-import.js"
+[headers.values]
+Cache-Control = "no-cache"
+
+[[headers]]
+for = "/transaction-ui.js"
+[headers.values]
+Cache-Control = "no-cache"
 
 [[redirects]]
   from = "/*"

@@ -453,6 +453,11 @@
               </button>
               <input id="restoreDataInput" type="file" accept="application/json,.json" hidden>
             </div>
+            <div class="app-update-tools">
+              <span id="appVersion"></span>
+              <button class="secondary-btn small" type="button" id="checkAppUpdateBtn">Check for updates</button>
+              <span id="appUpdateStatus" role="status"></span>
+            </div>
           </section>
           <div class="history-filters">
             <label class="field">
@@ -490,6 +495,24 @@
               <tbody id="paymentRows"></tbody>
             </table>
           </div>
+          <section class="transaction-section" aria-labelledby="transactionsHeading">
+            <div class="section-toolbar">
+              <h2 id="transactionsHeading">Transactions</h2>
+              <div class="data-actions">
+                <button class="primary-btn" type="button" id="importTransactionsBtn">Import CSV</button>
+                <button class="secondary-btn" type="button" id="exportTransactionsBtn">Export CSV</button>
+                <input type="file" id="transactionCsvInput" accept=".csv,text/csv" hidden>
+              </div>
+            </div>
+            <p class="agenda-summary" id="transactionSummary" role="status"></p>
+            <div class="responsive-table payment-history">
+              <table>
+                <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Account</th></tr></thead>
+                <tbody id="transactionRows"></tbody>
+              </table>
+            </div>
+            <button class="secondary-btn full" type="button" id="moreTransactionsBtn" hidden>Show more transactions</button>
+          </section>
         </section>
       </main>
     </div>
@@ -701,11 +724,34 @@
       </form>
     </dialog>
 
+    <dialog class="modal csv-modal" id="csvModal" aria-labelledby="csvModalTitle">
+      <div class="modal-panel">
+        <div class="modal-heading">
+          <div><h2 id="csvModalTitle">Import transactions</h2><p id="csvFileName"></p></div>
+          <button class="icon-btn" type="button" data-close-modal="csvModal" aria-label="Close CSV import"><span aria-hidden="true">x</span></button>
+        </div>
+        <details><summary>Source columns and first five rows</summary><div class="responsive-table csv-table" id="csvRawPreview"></div></details>
+        <div class="form-grid" id="csvMapping"></div>
+        <label class="check-row"><input id="csvSkipDuplicates" type="checkbox" checked><span>Skip matching saved transactions</span></label>
+        <h3>Transaction preview</h3>
+        <div class="responsive-table csv-table" id="csvPreview"></div>
+        <p id="csvImportStatus" role="status"></p>
+        <ul class="csv-errors" id="csvErrors" aria-label="Import errors"></ul>
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" data-close-modal="csvModal">Cancel</button>
+          <button class="primary-btn" type="button" id="confirmCsvImportBtn" disabled>Import transactions</button>
+        </div>
+      </div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite">
       <span id="toastMessage"></span>
       <button class="secondary-btn small" type="button" id="toastUndoBtn" hidden>Undo</button>
     </div>
 
+    <script src="vendor/papaparse.min.js"></script>
+    <script src="csv-import.js"></script>
+    <script src="transaction-ui.js"></script>
     <script src="app.js"></script>
   </body>
 </html>

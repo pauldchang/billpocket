@@ -8,7 +8,21 @@ Recurring schedule and amount changes retain earlier versions in `scheduleHistor
 
 Email imports preserve a recurring month-end day when the statement matches the existing schedule (for example, a February 28 statement does not change a 31st-day schedule). A paid one-time bill's date and frequency stay locked until its manual paid mark is undone; imports cannot silently move that paid purchase into another month. The editor shows the latest schedule separately from historical paid dates.
 
-Run the dependency-free regression checks from the repository root with `node --test tests/billpocket.test.cjs`.
+Run the regression checks from the repository root with `node --test tests/billpocket.test.cjs tests/csv-import.test.cjs`.
+
+## CSV Transactions
+
+History includes a separate transaction log and Import CSV wizard. This checkout previously had text/email attachment capture, not a structured transaction importer. CSV import does not create bills, infer future due dates, or mark bills paid. CSV files chosen through email attachments also open this wizard; non-CSV email capture is unchanged.
+
+The wizard auto-maps unambiguous common headers, supports manual mapping by column position, and previews the first five normalized transactions. Date and Description plus either Amount or both Debit and Credit are required; Category and Account are optional. Duplicate header names require an explicit selection. Numeric dates default to month/day/year with an explicit day/month/year option; ISO year-first dates and English month names are supported. Missing required cells, invalid dates, malformed quotes, inconsistent column counts, and invalid amounts block the entire import with physical source line numbers. Blank rows are ignored, including when quoted descriptions span several lines.
+
+Amounts are stored as signed integer cents. In Amount mode, positive means money in unless the user selects money out. In Debit/Credit mode, the column determines direction: debits are negative, credits positive, and signed values are treated as magnitudes. Both nonzero sides or both blank sides require correction. Dollar signs, properly grouped commas, leading signs, and parenthesized negatives are accepted. No partial numeric parsing or silent date rollover is allowed. Limits: 5 MB, 10,000 data rows, 100 columns, and $1 billion per transaction.
+
+Exact matching uses date, normalized description, signed cents, and account, preserving repeated identical rows within a file. Reimporting a file skips the number of matching saved occurrences; the user can turn that off for intentional duplicates. Category is not part of the identity. Matching is a local heuristic, not bank reconciliation. Failed or stale-tab saves preserve the preview and do not partially add transactions. Backups include the new optional `transactions` array and continue accepting older backups without it. Transaction exports use the auto-recognized Date/Description/Amount/Category/Account structure and the existing CSV formula-injection escaping.
+
+CSV parsing uses the vendored MIT-licensed Papa Parse 5.7.0 package from the official npm registry. `vendor/LICENSE` contains its license. Files are parsed locally, never uploaded; the parser and import UI are included in the offline shell. There are no saved bank templates, format learning, multi-row headers, spreadsheet imports, formulas, or split transactions in this release.
+
+Email capture now offers explicit update/create destinations. Ambiguous same-name bills cannot overwrite the first match; a blocked batch leaves all records unchanged. Date-sensitive views refresh on resume and at day boundaries without replacing bill forms, email drafts, or budget inputs. History displays the running app version and provides an update check without clearing device data.
 
 Capture keeps sender and subject headers with their message, uses full dates and order IDs for receipt matching, and distinguishes a missing amount from an explicit zero. Review corrections remain in memory while navigating; raw pasted emails are cleared after import and are not stored in backups. Receipt matching without an order ID is limited to merchant, date, and amount. Recurring statements are imported in due-date order, and older statements cannot overwrite the latest captured amount.
 

@@ -3,6 +3,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
+const CsvImport = require("../outputs/bill-calendar-pwa/csv-import.js");
 
 const source = fs.readFileSync(path.join(__dirname, "../outputs/bill-calendar-pwa/app.js"), "utf8").replace(/\ninit\(\);\s*$/, "");
 function app(now = "2026-09-08T12:00:00", storage = new Map()) {
@@ -12,7 +13,7 @@ function app(now = "2026-09-08T12:00:00", storage = new Map()) {
     static now() { return new Date(now).getTime(); }
   }
   const context = vm.createContext({
-    Date: Clock, Intl, structuredClone, console,
+    Date: Clock, Intl, structuredClone, console, CsvImport,
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     document: { getElementById: (id) => {
       if (!elements.has(id)) elements.set(id, { value: "", checked: false, reportValidity: () => true,
@@ -21,11 +22,217 @@ function app(now = "2026-09-08T12:00:00", storage = new Map()) {
     } },
     window: { setTimeout() {}, clearTimeout() {}, confirm: () => true }
   });
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '../outputs/bill-calendar-pwa/transaction-ui.js'), 'utf8'), context);
   vm.runInContext(source, context);
   const run = (code) => vm.runInContext(code, context);
   run('render = () => {}; state.bills = []; state.payments = []; state.activity = [];');
-  return { run, elements, context, storage };
+  return { run, elements, context, storage, setNow: (value) => { now = value; } };
 }
+
+test('transaction import commits atomically and does not change bills or payments', () => {
+  const {run} = app();
+  run(`globalThis.parsedCsv = CsvImport.read('Date,Description,Amount\\n2026-09-17,Shop,-25');
+    csvDraft = {parsed:parsedCsv,mapping:parsedCsv.mapping,skipDuplicates:true}; saveState();`);
+  const bills = run('JSON.stringify(state.bills)');
+  const payments = run('JSON.stringify(state.payments)');
+  assert.equal(run('commitCsvImport()'), true);
+  assert.equal(run('state.transactions.length'),1);
+  assert.equal(run('state.transactions[0].amountCents'),-2500);
+  assert.equal(run('JSON.stringify(state.bills)'),bills);
+  assert.equal(run('JSON.stringify(state.payments)'),payments);
+  assert.equal(run('getBackupState(buildDataBackup()) !== null'),true);
+  run('state = loadState()');
+  assert.equal(run('state.transactions.length'),1);
+});
+
+test('transaction preview rejects invalid rows without partially importing good rows', () => {
+  const {run} = app();
+  run(`globalThis.parsedCsv = CsvImport.read('Date,Description,Amount\\n2026-09-17,Shop,-25\\n2026-02-30,Bad,nope');
+    csvDraft = {parsed:parsedCsv,mapping:parsedCsv.mapping,skipDuplicates:true}; saveState();`);
+  const before = run('JSON.stringify(state)');
+  assert.equal(run('commitCsvImport()'),false);
+  assert.equal(run('JSON.stringify(state)'),before);
+  assert.equal(run('csvDraft !== null'),true);
+});
+
+test('transaction imports retain preview and existing records on storage failure or stale tabs', () => {
+  for (const fail of ["localStorage.setItem = () => {throw new Error('Full');}", "localStorage.setItem(STORAGE_KEY, '{}')"]) {
+    const {run} = app();
+    run(`globalThis.parsedCsv = CsvImport.read('Date,Description,Amount\\n2026-09-17,Shop,-25');
+      csvDraft = {parsed:parsedCsv,mapping:parsedCsv.mapping,skipDuplicates:true}; saveState(); ${fail}`);
+    const before = run('JSON.stringify(state)');
+    assert.equal(run('commitCsvImport()'),false);
+    assert.equal(run('JSON.stringify(state)'),before);
+    assert.equal(run('csvDraft !== null'),true);
+  }
+});
+
+test('old backups load without transactions and malformed transaction records are rejected', () => {
+  const {run} = app();
+  assert.equal(run('hydrateState({bills:[],payments:[]}).transactions.length'),0);
+  run(`globalThis.tx = {id:'txn-1',date:'2026-09-17',description:'Shop',amountCents:-1234,category:'Shopping',account:'Checking'}`);
+  assert.equal(run('getBackupState({...state,transactions:[tx]}) !== null'),true);
+  for (const change of ["amountCents:1.234", "amountCents:null", "date:'2026-02-30'", "description:''", "account:null"]) {
+    assert.equal(run(`getBackupState({...state,transactions:[{...tx,${change}}]})`),null);
+  }
+  assert.equal(run('getBackupState({...state,transactions:[tx,tx]})'),null);
+});
+
+function scanForm(harness, candidates) {
+  harness.run(`emailScanCandidates = ${JSON.stringify(candidates)}.map(item => ({...item, dueDate:parseLocalDate(item.dueDate), dateFound:true, amountFound:true})); showView = () => {};`);
+  const inputs = new Map();
+  for (const candidate of candidates) {
+    const fields = { name: candidate.name, amount: String(candidate.amount), 'due-date': candidate.dueDate,
+      category: candidate.category, frequency: candidate.frequency, target: candidate.importTarget || 'auto', 'amount-choice': '0' };
+    inputs.set(`[data-scan-select="${candidate.id}"]`, { checked: true });
+    for (const [field, value] of Object.entries(fields)) {
+      inputs.set(`[data-scan-${field}="${candidate.id}"]`, { value, reportValidity: () => true });
+    }
+  }
+  harness.context.document.querySelector = (selector) => inputs.get(selector);
+  return inputs;
+}
+
+test("same-name recurring bills require an explicit import destination", () => {
+  const { run } = app();
+  run(`state.bills = ['card-a','card-b'].map((id,i) => ({id, name:'City Bank', category:'credit', amount:50+i, frequency:'monthly', dueDay:20, dueDate:'2026-09-20'}));
+    globalThis.candidate = {name:'City Bank', frequency:'monthly', amount:40, dueDate:parseLocalDate('2026-09-20'), dateFound:true};`);
+  assert.equal(run('findMatchingCapturedBill(candidate)'), undefined);
+  assert.equal(run('getCandidateMatch(candidate).status'), 'ambiguous-match');
+  assert.equal(run("getCaptureDestination({...candidate, importTarget:'bill:card-b'}).bill.id"), 'card-b');
+  assert.equal(run("getCandidateMatch({...candidate, importTarget:'new'}).status"), 'new-bill');
+  assert.equal(run("Boolean(getCaptureDestination({...candidate, importTarget:'bill:missing'}).error)"), true);
+});
+
+test("a blocked batch changes no bills, rules, storage, or pasted text", () => {
+  const harness = app();
+  const { run, elements } = harness;
+  run(`state.bills = ['card-a','card-b'].map(id => ({id, name:'City Bank', category:'credit', amount:50, frequency:'monthly', dueDay:20, dueDate:'2026-09-20'})); saveState();`);
+  const inputs = scanForm(harness, [
+    {id:'scan-a', name:'Water', category:'utilities', frequency:'monthly', amount:25, dueDate:'2026-09-15'},
+    {id:'scan-b', name:'City Bank', category:'credit', frequency:'monthly', amount:40, dueDate:'2026-09-20'}
+  ]);
+  elements.get('emailPasteInput').value = 'Keep this draft';
+  const before = run('JSON.stringify(state)');
+  const saved = run('localStorage.getItem(STORAGE_KEY)');
+  run('importScannedBills()');
+  assert.equal(run('JSON.stringify(state)'), before);
+  assert.equal(run('localStorage.getItem(STORAGE_KEY)'), saved);
+  assert.equal(run('emailScanCandidates.length'), 2);
+  assert.equal(elements.get('emailPasteInput').value, 'Keep this draft');
+  inputs.get('[data-scan-target="scan-b"]').value = 'bill:card-b';
+  run('importScannedBills()');
+  assert.equal(run('state.bills.length'), 3);
+  assert.equal(run("state.bills.find(bill => bill.id === 'card-a').amount"), 50);
+  assert.equal(run("state.bills.find(bill => bill.id === 'card-b').amount"), 40);
+  assert.equal(run('getBackupState(buildDataBackup()) !== null'), true);
+});
+
+test("a separate import does not overwrite the matching account", () => {
+  const harness = app();
+  harness.run(`state.bills = [{id:'card', name:'City Bank', category:'credit', amount:50, frequency:'monthly', dueDay:20, dueDate:'2026-09-20'}];`);
+  scanForm(harness, [{id:'scan', name:'City Bank', category:'credit', amount:80, frequency:'monthly', dueDate:'2026-09-20', importTarget:'new'}]);
+  harness.run('importScannedBills()');
+  assert.equal(harness.run('state.bills.length'), 2);
+  assert.equal(harness.run('state.bills[0].amount'), 50);
+  assert.equal(harness.run('state.bills[1].amount'), 80);
+});
+
+test("automatic batch statements still update in due-date order and preserve amounts", () => {
+  const harness = app();
+  scanForm(harness, [
+    {id:'later', name:'Water', category:'utilities', amount:80, frequency:'monthly', dueDate:'2026-10-20'},
+    {id:'earlier', name:'Water', category:'utilities', amount:50, frequency:'monthly', dueDate:'2026-09-20'}
+  ]);
+  harness.run('importScannedBills()');
+  assert.equal(harness.run('state.bills.length'), 1);
+  assert.equal(harness.run('getMonthStatus().total'), 50);
+  assert.equal(harness.run('getMonthStatus(new Date(2026,9,1)).total'), 80);
+});
+
+test("explicit destinations retain older-statement and paid-purchase safeguards", () => {
+  const { run } = app();
+  run(`state.bills = [{id:'card', name:'City Bank', category:'credit', amount:50, frequency:'monthly', dueDay:20, dueDate:'2026-09-20'},
+    {id:'order', name:'Amazon', category:'purchase', amount:20, frequency:'one-time', dueDay:5, dueDate:'2026-09-05'}];
+    markBillPaidForPeriod('order','2026-09-05');`);
+  assert.equal(run("getCandidateMatch({name:'New label', frequency:'monthly', dueDate:parseLocalDate('2026-08-20'), dateFound:true, importTarget:'bill:card'}).status"), 'older-statement');
+  assert.equal(run("getCandidateMatch({name:'Amazon', frequency:'one-time', dueDate:parseLocalDate('2026-10-05'), dateFound:true, importTarget:'bill:order'}).status"), 'paid-date');
+  assert.equal(run("Boolean(getCaptureDestination({frequency:'monthly', importTarget:'bill:order'}).error)"), true);
+});
+
+test("resuming after midnight refreshes due status without replacing drafts", () => {
+  const { run, elements, setNow } = app('2026-09-30T23:59:00');
+  run(`state.bills = [{id:'water', name:'Water', category:'utilities', amount:50, frequency:'monthly', dueDay:30, dueDate:'2026-09-30'}];
+    renderPocketOverview = renderMetrics = renderCalendar = renderAgenda = renderForecastBars = renderBills = () => {};`);
+  elements.get('incomeInput').value = '7654';
+  elements.get('reserveInput').value = '1234';
+  elements.get('includeAutopayInput').checked = false;
+  elements.get('emailPasteInput').value = 'Unfinished email';
+  run("document.getElementById('billNameInput').value = 'Unfinished bill'");
+  assert.equal(run('refreshDateSensitiveViews()'), false);
+  assert.equal(run('getOverdueBills().length'), 0);
+  setNow('2026-10-01T00:01:00');
+  assert.equal(run('refreshDateSensitiveViews()'), true);
+  assert.equal(run('getOverdueBills().length'), 1);
+  assert.equal(run('toDateInputValue(displayDate)'), '2026-10-01');
+  assert.equal(elements.get('incomeInput').value, '7654');
+  assert.equal(elements.get('reserveInput').value, '1234');
+  assert.equal(elements.get('includeAutopayInput').checked, false);
+  assert.equal(elements.get('emailPasteInput').value, 'Unfinished email');
+  assert.equal(elements.get('billNameInput').value, 'Unfinished bill');
+  assert.match(elements.get('todayLabel').textContent, /October 1/);
+  assert.equal(run('refreshDateSensitiveViews()'), false);
+});
+
+test("date refresh respects a browsed month or selected calendar day", () => {
+  const { run, setNow } = app('2026-09-30T23:59:00');
+  run(`renderTodayLabel = renderPocketOverview = renderMetrics = renderCalendar = renderAgenda = renderForecastBars = renderBills = renderBudget = () => {};
+    displayDate = new Date(2027,0,1);`);
+  setNow('2026-10-01T00:01:00');
+  run('handleAppResume()');
+  assert.equal(run('toDateInputValue(displayDate)'), '2027-01-01');
+  run("displayDate = new Date(2026,9,1); selectedAgendaDate = '2026-10-05'");
+  setNow('2026-11-01T00:01:00');
+  run('handleAppResume()');
+  assert.equal(run('toDateInputValue(displayDate)'), '2026-10-01');
+  assert.equal(run('selectedAgendaDate'), '2026-10-05');
+});
+
+test("update checks report offline and failures without changing bill storage", async () => {
+  const { run, elements } = app();
+  run('saveState(); globalThis.navigator = {serviceWorker:{}, onLine:false}');
+  const saved = run('localStorage.getItem(STORAGE_KEY)');
+  await run('checkForAppUpdate()');
+  assert.match(elements.get('appUpdateStatus').textContent, /Offline/);
+  run("navigator.onLine = true; navigator.serviceWorker.getRegistration = async () => { throw new Error('Network'); }");
+  await run('checkForAppUpdate()');
+  assert.match(elements.get('appUpdateStatus').textContent, /Could not check/);
+  assert.equal(elements.get('checkAppUpdateBtn').disabled, false);
+  assert.equal(run('localStorage.getItem(STORAGE_KEY)'), saved);
+});
+
+test("update checks compare the active worker version with the running app", async () => {
+  const { run, elements } = app();
+  run(`globalThis.navigator = {onLine:true, serviceWorker:{getRegistration:async () => ({update:async () => {}, active:{}})}};
+    getWorkerVersion = async () => APP_VERSION;`);
+  await run('checkForAppUpdate()');
+  assert.equal(elements.get('appUpdateStatus').textContent, `${run('APP_VERSION')}: no newer update found.`);
+  run("getWorkerVersion = async () => 'v-next'");
+  await run('checkForAppUpdate()');
+  assert.equal(elements.get('updateNotice').hidden, false);
+  assert.match(elements.get('appUpdateStatus').textContent, /Update ready/);
+});
+
+test("service worker reports the same version as the app", () => {
+  const listeners = new Map();
+  const worker = fs.readFileSync(path.join(__dirname, '../outputs/bill-calendar-pwa/sw.js'), 'utf8');
+  const context = vm.createContext({self:{addEventListener:(name, fn) => listeners.set(name, fn)}});
+  vm.runInContext(worker, context);
+  let message;
+  listeners.get('message')({data:{type:'GET_VERSION'}, ports:[{postMessage:value => { message = value; }}]});
+  assert.equal(message.version, app().run('APP_VERSION'));
+  assert.equal(vm.runInContext('CACHE_NAME', context), `billpocket-${message.version}`);
+});
 
 test("annual and quarterly bills recur from their actual due month", () => {
   const { run } = app();

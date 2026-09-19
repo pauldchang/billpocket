@@ -1,12 +1,20 @@
-const CACHE_NAME = "billpocket-v17";
+const APP_VERSION = "v19";
+const CACHE_NAME = `billpocket-${APP_VERSION}`;
 const APP_SHELL = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
+  "./csv-import.js",
+  "./transaction-ui.js",
+  "./vendor/papaparse.min.js",
   "./manifest.webmanifest",
   "./assets/icon.svg"
 ];
+
+self.addEventListener("message", (event) => {
+  if (event.data?.type === "GET_VERSION") event.ports[0]?.postMessage({ version: APP_VERSION });
+});
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

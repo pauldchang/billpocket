@@ -1,0 +1,4 @@
+Date,Description,Amount
+2026-09-17,QA valid,-20
+2026-02-30,QA invalid date,10
+2026-09-18,QA invalid amount,abc
