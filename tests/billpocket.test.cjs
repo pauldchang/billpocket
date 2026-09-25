@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const vm = require("node:vm");
 const path = require("node:path");
 const CsvImport = require("../outputs/bill-calendar-pwa/csv-import.js");
+const TransactionSplits = require("../outputs/bill-calendar-pwa/transaction-splits.js");
 
 const source = fs.readFileSync(path.join(__dirname, "../outputs/bill-calendar-pwa/app.js"), "utf8").replace(/\ninit\(\);\s*$/, "");
 function app(now = "2026-09-08T12:00:00", storage = new Map()) {
@@ -13,7 +14,7 @@ function app(now = "2026-09-08T12:00:00", storage = new Map()) {
     static now() { return new Date(now).getTime(); }
   }
   const context = vm.createContext({
-    Date: Clock, Intl, structuredClone, console, CsvImport,
+    Date: Clock, Intl, structuredClone, console, CsvImport, TransactionSplits,
     localStorage: { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value) },
     document: { getElementById: (id) => {
       if (!elements.has(id)) elements.set(id, { value: "", checked: false, reportValidity: () => true,
@@ -76,6 +77,108 @@ test('old backups load without transactions and malformed transaction records ar
     assert.equal(run(`getBackupState({...state,transactions:[{...tx,${change}}]})`),null);
   }
   assert.equal(run('getBackupState({...state,transactions:[tx,tx]})'),null);
+});
+
+function splitFixture(harness) {
+  harness.run(`state.transactions = [{id:'txn-split',date:'2026-09-20',description:'Mixed shop',amountCents:-12345,category:'Shopping',account:'Checking'}];
+    saveState(); openTransactionSplit('txn-split');
+    splitDraft.parts = [{category:'Groceries',amount:'100.00',direction:'out'},{category:'Household',amount:'23.45',direction:'out'}];`);
+}
+
+test('saving and editing splits keeps original bank identity and net total without touching bills', () => {
+  const harness = app();
+  const {run,elements} = harness;
+  splitFixture(harness);
+  const untouched = run('JSON.stringify([state.bills,state.payments,state.settings])');
+  assert.equal(run('commitTransactionSplit()'),true);
+  assert.equal(run('state.transactions.length'),1);
+  assert.equal(run('state.transactions[0].category'),'Shopping');
+  assert.equal(run('state.transactions[0].amountCents'),-12345);
+  assert.equal(run('state.transactions[0].splits.length'),2);
+  assert.equal(elements.get('transactionSummary').textContent,'1 transactions - Net -$123.45');
+  run(`openTransactionSplit('txn-split'); splitDraft.parts[0].amount='90'; splitDraft.parts[1].amount='33.45';`);
+  assert.equal(run('commitTransactionSplit()'),true);
+  assert.equal(run('state.transactions[0].splits[0].amountCents'),-9000);
+  assert.equal(run('JSON.stringify([state.bills,state.payments,state.settings])'),untouched);
+});
+
+test('imbalanced, invalid and empty-category splits do not mutate saved data', () => {
+  for (const change of ["splitDraft.parts[0].amount='100.01'", "splitDraft.parts[1].category=' '", "splitDraft.parts[0].amount='abc'"]) {
+    const harness = app(); const {run} = harness;
+    splitFixture(harness);
+    const before = run('JSON.stringify(state)');
+    run(change);
+    assert.equal(run('commitTransactionSplit()'),false);
+    assert.equal(run('JSON.stringify(state)'),before);
+    assert.equal(run('splitDraft !== null'),true);
+  }
+});
+
+test('split draft preserves edits on quota errors, stale saves and missing or changed source records', () => {
+  for (const fail of ["localStorage.setItem=()=>{throw new Error('Full')}" , "localStorage.setItem(STORAGE_KEY,'{}')",
+    "state.transactions=[]", "state.transactions[0].amountCents=-10000"]) {
+    const harness = app(); const {run} = harness;
+    splitFixture(harness);
+    run(fail);
+    const before = run('JSON.stringify(state)');
+    assert.equal(run('commitTransactionSplit()'),false);
+    assert.equal(run('JSON.stringify(state)'),before);
+    assert.equal(run('splitDraft.parts[0].amount'),'100.00');
+  }
+});
+
+test('split backups survive reload and malformed child totals or metadata are rejected', () => {
+  const harness = app(); const {run} = harness;
+  splitFixture(harness);
+  run('commitTransactionSplit()');
+  assert.equal(run('getBackupState(buildDataBackup()) !== null'),true);
+  run('state=loadState()');
+  assert.equal(run('unreadableStorage'),false);
+  assert.equal(run('state.transactions[0].splits.length'),2);
+  const snapshot = run('JSON.stringify(state)');
+  for (const change of ["splits=[]", "splits=null", "splits[0].amountCents=-9999", "splits[0].date='2026-01-01'", "splits[0].category='' "]) {
+    run(`state=${snapshot}; state.transactions[0].${change};`);
+    assert.equal(run('getBackupState(buildDataBackup())'),null);
+  }
+});
+
+test('Undo split restores original category and toast Undo restores the exact portions', () => {
+  const harness = app(); const {run,elements} = harness;
+  splitFixture(harness);
+  run('commitTransactionSplit()');
+  const split = run('JSON.stringify(state.transactions[0])');
+  run(`openTransactionSplit('txn-split')`);
+  assert.equal(run('commitTransactionSplit(true)'),true);
+  assert.equal(run('state.transactions[0].splits'),undefined);
+  assert.equal(run('state.transactions[0].category'),'Shopping');
+  elements.get('toastUndoBtn').onclick();
+  assert.equal(run('JSON.stringify(state.transactions[0])'),split);
+});
+
+test('toast Undo cannot overwrite a later transaction edit and cancellation never mutates the original', () => {
+  const harness = app(); const {run,elements} = harness;
+  splitFixture(harness);
+  const original = run('JSON.stringify(state.transactions)');
+  run(`splitDraft.parts[0].amount='1'; splitDraft=null;`);
+  assert.equal(run('JSON.stringify(state.transactions)'),original);
+  splitFixture(harness);
+  run('commitTransactionSplit()');
+  const undo = elements.get('toastUndoBtn').onclick;
+  run(`state.transactions[0].account='Changed'; saveState();`);
+  undo();
+  assert.equal(run('state.transactions[0].account'),'Changed');
+  assert.equal(run('state.transactions[0].splits.length'),2);
+});
+
+test('original CSV reimport skips a split transaction and preserves its portions', () => {
+  const harness = app(); const {run} = harness;
+  splitFixture(harness);
+  run(`commitTransactionSplit();
+    globalThis.parsedSplitCsv=CsvImport.read('Date,Description,Amount,Account\\n2026-09-20,Mixed shop,-123.45,Checking');
+    csvDraft={parsed:parsedSplitCsv,mapping:parsedSplitCsv.mapping,skipDuplicates:true};`);
+  assert.equal(run('commitCsvImport()'),false);
+  assert.equal(run('state.transactions.length'),1);
+  assert.equal(run('state.transactions[0].splits.length'),2);
 });
 
 function scanForm(harness, candidates) {

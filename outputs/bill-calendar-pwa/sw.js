@@ -1,4 +1,4 @@
-const APP_VERSION = "v19";
+const APP_VERSION = "v20";
 const CACHE_NAME = `billpocket-${APP_VERSION}`;
 const APP_SHELL = [
   "./",
@@ -6,6 +6,7 @@ const APP_SHELL = [
   "./styles.css",
   "./app.js",
   "./csv-import.js",
+  "./transaction-splits.js",
   "./transaction-ui.js",
   "./vendor/papaparse.min.js",
   "./manifest.webmanifest",

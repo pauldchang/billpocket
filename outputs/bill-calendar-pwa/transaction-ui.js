@@ -1,22 +1,112 @@
 let csvDraft = null;
 let csvReadSequence = 0;
 let transactionLimit = 50;
+let splitDraft = null;
 
 function renderTransactions() {
   const transactions = state.transactions || [];
   const ordered = transactions.slice().sort((a, b) => b.date.localeCompare(a.date));
-  const total = transactions.reduce((sum, item) => sum + item.amountCents, 0);
+  const total = TransactionSplits.entries(transactions).reduce((sum, item) => sum + item.amountCents, 0);
   document.getElementById("transactionSummary").textContent = `${transactions.length} transactions - Net ${formatMoney(total / 100)}`;
   document.getElementById("transactionRows").innerHTML = ordered.slice(0, transactionLimit).map((item) => `
     <tr>
       <td data-label="Date">${escapeHtml(item.date)}</td>
       <td data-label="Description" class="history-biller">${escapeHtml(item.description)}</td>
-      <td data-label="Amount">${formatMoney(item.amountCents / 100)}</td>
-      <td data-label="Category">${escapeHtml(item.category)}</td>
+      <td data-label="${item.splits ? "Split total" : "Amount"}">${formatMoney(item.amountCents / 100)}</td>
+      <td data-label="Category">${item.splits ? `<details class="transaction-portions"><summary>${item.splits.length} categories</summary><ul>${item.splits.map((part) => `<li><span>${escapeHtml(part.category)}</span><strong>${formatMoney(part.amountCents / 100)}</strong></li>`).join("")}</ul></details>` : escapeHtml(item.category)}</td>
       <td data-label="Account">${escapeHtml(item.account || "Not specified")}</td>
-    </tr>`).join("") || '<tr class="history-empty"><td colspan="5">No transactions imported.</td></tr>';
+      <td data-label="Actions"><button class="secondary-btn small" type="button" data-split-transaction="${escapeHtml(item.id)}" aria-label="${item.splits ? "Edit split for" : "Split"} ${escapeHtml(item.description)}">${item.splits ? "Edit split" : "Split"}</button></td>
+    </tr>`).join("") || '<tr class="history-empty"><td colspan="6">No transactions imported.</td></tr>';
   document.getElementById("moreTransactionsBtn").hidden = ordered.length <= transactionLimit;
   document.getElementById("exportTransactionsBtn").disabled = !transactions.length;
+}
+
+function openTransactionSplit(id) {
+  const original = state.transactions.find((item) => item.id === id);
+  if (!original) return;
+  splitDraft = {
+    original: structuredClone(original),
+    parts: (original.splits || [{ category: original.category, amountCents: original.amountCents }, { category: "", amountCents: 0 }])
+      .map((part) => ({ category: part.category, amount: (Math.abs(part.amountCents) / 100).toFixed(2), direction: (part.amountCents || original.amountCents) < 0 ? "out" : "in" }))
+  };
+  document.getElementById("splitTransactionName").textContent = `${original.description} - ${original.date}`;
+  document.getElementById("splitOriginalTotal").textContent = formatMoney(original.amountCents / 100);
+  document.getElementById("removeTransactionSplitBtn").hidden = !original.splits;
+  const categories = new Set([...Object.values(categoryLabels), ...TransactionSplits.entries(state.transactions).map((item) => item.category)]);
+  document.getElementById("splitCategories").innerHTML = [...categories].sort().map((category) => `<option value="${escapeHtml(category)}"></option>`).join("");
+  renderSplitRows();
+  document.getElementById("splitModal").showModal();
+}
+
+function renderSplitRows() {
+  if (!splitDraft) return;
+  document.getElementById("splitRows").innerHTML = splitDraft.parts.map((part, index) => `<div class="split-row">
+    <label class="field"><span>Category ${index + 1}</span><input list="splitCategories" data-split-category="${index}" value="${escapeHtml(part.category)}" autocomplete="off"></label>
+    <label class="field"><span>Amount ${index + 1}</span><input type="text" inputmode="decimal" data-split-amount="${index}" value="${escapeHtml(part.amount)}" autocomplete="off"></label>
+    <label class="field split-direction"><span>Direction ${index + 1}</span><select data-split-direction="${index}"><option value="out" ${part.direction === "out" ? "selected" : ""}>Money out</option><option value="in" ${part.direction === "in" ? "selected" : ""}>Money in</option></select></label>
+    <button class="icon-btn" type="button" data-remove-portion="${index}" aria-label="Remove portion ${index + 1}" title="Remove portion ${index + 1}" ${splitDraft.parts.length <= 2 ? "disabled" : ""}><span aria-hidden="true">x</span></button>
+  </div>`).join("");
+  document.getElementById("addSplitPortionBtn").disabled = splitDraft.parts.length >= TransactionSplits.MAX_PARTS;
+  renderSplitReview();
+}
+
+function getSplitReview() {
+  const parts = splitDraft.parts.map((part) => {
+    const amount = CsvImport.money(part.amount);
+    return { category: part.category.trim(), amountCents: amount === null ? null : Math.abs(amount) * (part.direction === "out" ? -1 : 1) };
+  });
+  return { parts, ...TransactionSplits.validate(splitDraft.original.amountCents, parts) };
+}
+
+function renderSplitReview() {
+  if (!splitDraft) return;
+  const result = getSplitReview();
+  const remaining = splitDraft.original.amountCents - result.totalCents;
+  document.getElementById("splitAllocatedTotal").textContent = formatMoney(result.totalCents / 100);
+  document.getElementById("splitRemainingTotal").textContent = formatMoney(remaining / 100);
+  document.getElementById("splitStatus").textContent = result.errors.join(" ") || "Balanced";
+  document.getElementById("saveTransactionSplitBtn").disabled = result.errors.length > 0;
+}
+
+function persistTransactionReplacement(original, replacement) {
+  if (unreadableStorage) throw new Error("Restore a valid backup before editing transactions.");
+  const current = state.transactions.find((item) => item.id === original.id);
+  if (JSON.stringify(current) !== JSON.stringify(original)) throw new Error("This transaction changed. Cancel and reopen it before saving.");
+  if (!TransactionSplits.isValidTransaction(replacement)) throw new Error("The split is invalid. Review the category amounts.");
+  const nextState = { ...state, transactions: state.transactions.map((item) => item.id === original.id ? structuredClone(replacement) : item) };
+  if (!persistState(nextState)) throw new Error("Saved data changed in another tab. Cancel and load the latest data first.");
+  state = nextState;
+  renderTransactions();
+  renderDataBackupStatus();
+}
+
+function commitTransactionSplit(remove = false) {
+  if (!splitDraft) return false;
+  const original = splitDraft.original;
+  const { splits, ...unsplit } = original;
+  let replacement = unsplit;
+  if (!remove) {
+    const review = getSplitReview();
+    if (review.errors.length) { renderSplitReview(); return false; }
+    replacement = { ...original, splits: review.parts };
+  }
+  try {
+    persistTransactionReplacement(original, replacement);
+    closeModal("splitModal");
+    splitDraft = null;
+    showToast(remove ? "Original category restored." : "Transaction split saved.", () => {
+      try {
+        persistTransactionReplacement(replacement, original);
+        showToast("Split change undone.");
+      } catch (error) { showToast(error.message || "Could not undo. Saved data was kept."); }
+    });
+    return true;
+  } catch (error) {
+    document.getElementById("splitStatus").textContent = error.name === "QuotaExceededError"
+      ? "Device storage is full. No changes were saved. Keep this editor open and try again."
+      : error.message || "Could not save. No changes were made.";
+    return false;
+  }
 }
 
 async function openCsvFile(file) {
@@ -123,6 +213,36 @@ function commitCsvImport() {
 }
 
 function initTransactions() {
+  document.getElementById("transactionRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-split-transaction]");
+    if (button) openTransactionSplit(button.dataset.splitTransaction);
+  });
+  document.getElementById("splitModal").addEventListener("close", () => { splitDraft = null; });
+  document.getElementById("splitRows").addEventListener("input", (event) => {
+    if (!splitDraft) return;
+    const { splitCategory, splitAmount, splitDirection } = event.target.dataset;
+    if (splitCategory !== undefined) splitDraft.parts[Number(splitCategory)].category = event.target.value;
+    if (splitAmount !== undefined) splitDraft.parts[Number(splitAmount)].amount = event.target.value;
+    if (splitDirection !== undefined) splitDraft.parts[Number(splitDirection)].direction = event.target.value;
+    renderSplitReview();
+  });
+  document.getElementById("splitRows").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-remove-portion]");
+    if (!button || !splitDraft || splitDraft.parts.length <= 2) return;
+    const index = Number(button.dataset.removePortion);
+    splitDraft.parts.splice(index, 1);
+    renderSplitRows();
+    document.querySelector(`[data-split-category="${Math.min(index, splitDraft.parts.length - 1)}"]`).focus();
+  });
+  document.getElementById("addSplitPortionBtn").addEventListener("click", () => {
+    if (!splitDraft || splitDraft.parts.length >= TransactionSplits.MAX_PARTS) return;
+    const remaining = splitDraft.original.amountCents - getSplitReview().totalCents;
+    splitDraft.parts.push({ category: "", amount: (Math.abs(remaining) / 100).toFixed(2), direction: (remaining || splitDraft.original.amountCents) < 0 ? "out" : "in" });
+    renderSplitRows();
+    document.querySelector(`[data-split-category="${splitDraft.parts.length - 1}"]`).focus();
+  });
+  document.getElementById("saveTransactionSplitBtn").addEventListener("click", () => commitTransactionSplit());
+  document.getElementById("removeTransactionSplitBtn").addEventListener("click", () => commitTransactionSplit(true));
   document.getElementById("importTransactionsBtn").addEventListener("click", () => document.getElementById("transactionCsvInput").click());
   document.getElementById("transactionCsvInput").addEventListener("change", (event) => openCsvFile(event.target.files[0]));
   document.getElementById("confirmCsvImportBtn").addEventListener("click", commitCsvImport);
@@ -141,7 +261,6 @@ function initTransactions() {
   });
   document.getElementById("moreTransactionsBtn").addEventListener("click", () => { transactionLimit += 50; renderTransactions(); });
   document.getElementById("exportTransactionsBtn").addEventListener("click", () => {
-    exportCsv("billpocket-transactions.csv", [["Date", "Description", "Amount", "Category", "Account"],
-      ...(state.transactions || []).map((item) => [item.date, item.description, (item.amountCents / 100).toFixed(2), item.category, item.account])]);
+    exportCsv("billpocket-transactions.csv", TransactionSplits.csvRows(state.transactions || []));
   });
 }

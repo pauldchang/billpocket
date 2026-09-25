@@ -12,6 +12,11 @@ for = "/transaction-ui.js"
 [headers.values]
 Cache-Control = "no-cache"
 
+[[headers]]
+for = "/transaction-splits.js"
+[headers.values]
+Cache-Control = "no-cache"
+
 [[redirects]]
   from = "/*"
   to = "/index.html"

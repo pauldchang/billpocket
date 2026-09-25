@@ -8,7 +8,7 @@ Recurring schedule and amount changes retain earlier versions in `scheduleHistor
 
 Email imports preserve a recurring month-end day when the statement matches the existing schedule (for example, a February 28 statement does not change a 31st-day schedule). A paid one-time bill's date and frequency stay locked until its manual paid mark is undone; imports cannot silently move that paid purchase into another month. The editor shows the latest schedule separately from historical paid dates.
 
-Run the regression checks from the repository root with `node --test tests/billpocket.test.cjs tests/csv-import.test.cjs`.
+Run the regression checks from the repository root with `node --test tests/billpocket.test.cjs tests/csv-import.test.cjs tests/transaction-splits.test.cjs`.
 
 ## CSV Transactions
 
@@ -20,7 +20,17 @@ Amounts are stored as signed integer cents. In Amount mode, positive means money
 
 Exact matching uses date, normalized description, signed cents, and account, preserving repeated identical rows within a file. Reimporting a file skips the number of matching saved occurrences; the user can turn that off for intentional duplicates. Category is not part of the identity. Matching is a local heuristic, not bank reconciliation. Failed or stale-tab saves preserve the preview and do not partially add transactions. Backups include the new optional `transactions` array and continue accepting older backups without it. Transaction exports use the auto-recognized Date/Description/Amount/Category/Account structure and the existing CSV formula-injection escaping.
 
-CSV parsing uses the vendored MIT-licensed Papa Parse 5.7.0 package from the official npm registry. `vendor/LICENSE` contains its license. Files are parsed locally, never uploaded; the parser and import UI are included in the offline shell. There are no saved bank templates, format learning, multi-row headers, spreadsheet imports, formulas, or split transactions in this release.
+CSV parsing uses the vendored MIT-licensed Papa Parse 5.7.0 package from the official npm registry. `vendor/LICENSE` contains its license. Files are parsed locally, never uploaded; the parser and import UI are included in the offline shell. There are no saved bank templates, format learning, multi-row headers, spreadsheet imports, or formulas.
+
+## Transaction Splits
+
+Each imported transaction can be split into 2-50 category-and-amount portions. The editor uses an amount magnitude plus Money in/Money out direction, including refunds and mixed-sign portions. All categories must be nonblank and amounts nonzero integer cents. Child amounts must equal the original signed total exactly; invalid edits cannot save.
+
+The original transaction remains stored with its unchanged ID, date, description, account, amount, and original category. Its optional `splits` array contains only `{category, amountCents}` children. `TransactionSplits.entries()` emits children instead of the parent for accounting. The transaction count is the number of original bank records; the displayed original amount is a group total. Children inherit source metadata and cannot be independently moved, deleted, or split again. Bills, forecasts, and paid marks remain independent and unchanged.
+
+Totals and CSV exports use only accounting entries, never both parent and children. Bank-file duplicate detection continues to use the unchanged original record, so reimporting a previously split purchase does not add it again or erase its split. CSV export is a flat accounting export, not a hierarchy-preserving backup; reimporting that export treats its portions as independent transactions. Use JSON backup/restore to preserve the parent relationship. Backups validate split shapes and exact totals and continue accepting pre-split records.
+
+Edit split replaces all portions atomically. Undo split restores the original category and amount; the toast Undo can reverse the latest split change if the transaction has not changed again. Cancel leaves the record unchanged. Storage failures, another tab's writes, and a changed or missing source record block saving without losing the editor draft. No shared transaction filters, budgets, or reports exist yet; future consumers must use `TransactionSplits.entries()` for accounting totals.
 
 Email capture now offers explicit update/create destinations. Ambiguous same-name bills cannot overwrite the first match; a blocked batch leaves all records unchanged. Date-sensitive views refresh on resume and at day boundaries without replacing bill forms, email drafts, or budget inputs. History displays the running app version and provides an update check without clearing device data.
 

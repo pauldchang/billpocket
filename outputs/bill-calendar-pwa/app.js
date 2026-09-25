@@ -1,5 +1,5 @@
 const STORAGE_KEY = "billflow-pwa-state-v1";
-const APP_VERSION = "v19";
+const APP_VERSION = "v20";
 
 const categoryLabels = {
   rent: "Rent",
@@ -2841,7 +2841,7 @@ function getBackupState(payload) {
   for (const key of ["bills", "payments", "transactions", "services", "accounts", "snapshots", "emailScanHistory", "captureSources", "activity"]) {
     if (source[key] !== undefined && !uniqueItems(source[key])) return null;
   }
-  if (source.transactions?.some((item) => !CsvImport.isValidTransaction(item))) return null;
+  if (source.transactions?.some((item) => !TransactionSplits.isValidTransaction(item))) return null;
   if (!source.bills.every((bill) => typeof bill.name === "string" && bill.name.trim()
     && validSchedule(bill)
     && Object.hasOwn(categoryLabels, bill.category)

@@ -507,7 +507,7 @@
             <p class="agenda-summary" id="transactionSummary" role="status"></p>
             <div class="responsive-table payment-history">
               <table>
-                <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Account</th></tr></thead>
+                <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>Category</th><th>Account</th><th>Actions</th></tr></thead>
                 <tbody id="transactionRows"></tbody>
               </table>
             </div>
@@ -744,6 +744,29 @@
       </div>
     </dialog>
 
+    <dialog class="modal csv-modal split-modal" id="splitModal" aria-labelledby="splitModalTitle">
+      <div class="modal-panel">
+        <div class="modal-heading">
+          <div><h2 id="splitModalTitle">Split transaction</h2><p id="splitTransactionName"></p></div>
+          <button class="icon-btn" type="button" data-close-modal="splitModal" aria-label="Close split editor"><span aria-hidden="true">x</span></button>
+        </div>
+        <dl class="split-totals">
+          <div><dt>Original total</dt><dd id="splitOriginalTotal"></dd></div>
+          <div><dt>Allocated</dt><dd id="splitAllocatedTotal"></dd></div>
+          <div><dt>Remaining</dt><dd id="splitRemainingTotal"></dd></div>
+        </dl>
+        <div id="splitRows"></div>
+        <datalist id="splitCategories"></datalist>
+        <button class="secondary-btn" type="button" id="addSplitPortionBtn"><span aria-hidden="true">+</span> Add portion</button>
+        <p id="splitStatus" role="status" aria-live="polite"></p>
+        <button class="ghost-btn" type="button" id="removeTransactionSplitBtn" hidden>Undo split</button>
+        <div class="modal-actions">
+          <button class="ghost-btn" type="button" data-close-modal="splitModal">Cancel</button>
+          <button class="primary-btn" type="button" id="saveTransactionSplitBtn" disabled>Save split</button>
+        </div>
+      </div>
+    </dialog>
+
     <div class="toast" id="toast" role="status" aria-live="polite">
       <span id="toastMessage"></span>
       <button class="secondary-btn small" type="button" id="toastUndoBtn" hidden>Undo</button>
@@ -751,6 +774,7 @@
 
     <script src="vendor/papaparse.min.js"></script>
     <script src="csv-import.js"></script>
+    <script src="transaction-splits.js"></script>
     <script src="transaction-ui.js"></script>
     <script src="app.js"></script>
   </body>
